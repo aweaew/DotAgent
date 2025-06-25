@@ -19,8 +19,8 @@
 
 *(强烈建议您录制一段简短的GIF或视频，展示脚本的悬浮窗操作、添加任务和执行过程，然后替换下方占位符)*
 
-![动图演示](images/demo1.gif)
-![动图演示](images/demo2.gif)
+![动图演示](images/demo01.gif)
+![动图演示](images/demo03.gif)
 
 ---
 
