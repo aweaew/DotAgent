@@ -24,6 +24,7 @@ function saveCurrentProfileThrottled(delayMs) {
         __saveProfileTimer = null;
     }, d);
 }
+
 // === PriorityQueue quick-persist helpers ===
 // 存储路径（Auto.js 常用可写目录）；你也可以改成其他路径
 const __PQ_STORE_PATH = "/sdcard/dotagent_priority_queue.json";
@@ -194,7 +195,7 @@ function reorderByPriority(sequence, triggers) {
 // =================================================================================
 const CONSTANTS = {
     // [新增] 新增图片截图
-    VERSION: "5.1.9 完善列表功能",
+    VERSION: "5.2.1 横屏坐标越界修正 ",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -1199,8 +1200,11 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
 
                         let ocrOptions = { useSlim: true };
                         if (task.search_area && task.search_area.length === 4) {
+                            // --- 核心修复：使用 calculatePaddedRegion 来限制 search_area ---
                             let [x1, y1, x2, y2] = task.search_area;
-                            ocrOptions.region = [x1, y1, x2 - x1, y2 - y1];
+                            let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                            ocrOptions.region = calculatePaddedRegion(searchBounds, 0); // 0 padding
+                            // --- 修复结束 ---
                         }
                         let ocrResults = ocr.paddle.detect(captured, ocrOptions);
                         captured.recycle();
@@ -1277,6 +1281,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                         
                         let padding = (task.cachePadding !== undefined) ? task.cachePadding : (appSettings.defaultCachePadding || 50);
                         let region = calculatePaddedRegion(b, padding);
+                        logErrorToScreen("[calculatePaddedRegion] 返回regon: " + JSON.stringify(region));
                         let p = images.findImage(captured, template, {
                             region: region,
                             threshold: task.threshold || 0.8
@@ -1308,8 +1313,12 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
 
                         let findOptions = { threshold: task.threshold || 0.8 };
                         if (task.search_area && task.search_area.length === 4) {
+                            // --- 核心修复：使用 calculatePaddedRegion 来限制 search_area ---
                             let [x1, y1, x2, y2] = task.search_area;
-                            findOptions.region = [x1, y1, x2 - x1, y2 - y1];
+                            let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                            findOptions.region = calculatePaddedRegion(searchBounds, 0); // 0 padding
+                            logErrorToScreen("[calculatePaddedRegion] 返回regon2: " + JSON.stringify(findOptions.region));
+                            // --- 修复结束 ---
                         }
                         let p = images.findImage(captured, template, findOptions);
                         captured.recycle();
@@ -1395,8 +1404,11 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 }
 
                 if (task.search_area && task.search_area.length === 4) {
+                    // --- 核心修复：使用 calculatePaddedRegion 来限制 search_area ---
                     let [x1, y1, x2, y2] = task.search_area;
-                    findOptions.region = [x1, y1, x2 - x1, y2 - y1];
+                    let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                    findOptions.region = calculatePaddedRegion(searchBounds, 0); // 0 padding
+                    // --- 修复结束 ---
                 }
 
                 // 1. 查找阶段: 等待目标出现
@@ -1511,14 +1523,32 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 break;
             }
             case 'start_monitor': {
+                // --- 修复 2: (并发控制) 检查是否已有 *任何* 监控在运行 ---
+                const isAnyMonitorRunning = appState.isMonitoring || Object.keys(appState.activeMonitors).length > 0;
+                if (isAnyMonitorRunning) {
+                    logErrorToScreen(`[${sourceName}] 启动监控 [${task.sequenceName}] 失败：已有其他监控正在运行。`);
+                    toast("启动监控失败：已有其他监控在运行");
+                    break; // 跳过此任务
+                }
+                // --- 修复 2 结束 ---
+
                 logToScreen(`[${sourceName}] 动态启动监控: ${task.sequenceName}`);
                 const sequenceToMonitor = sequences[task.sequenceName];
+                
                 if (sequenceToMonitor && sequenceToMonitor.executionPolicy.mode === 'monitor') {
+                    // (这个内部检查是多余的，因为上面的全局检查已经覆盖了，但保留它也无害)
                     if (appState.activeMonitors[task.sequenceName]) {
                         logToScreen(`警告: 监控 [${task.sequenceName}] 已在运行中，无需重复启动。`);
                         break;
                     }
+                    
+                    // 启动监控线程
                     runSingleMonitorThread(sequenceToMonitor, task.sequenceName);
+                    
+                    // --- 修复 1: (UI同步) 启动后，手动更新 👁️ 按钮状态 ---
+                    updateMonitorStatusUI();
+                    // --- 修复 1 结束 ---
+
                 } else {
                     logErrorToScreen(`错误: 找不到名为 "${task.sequenceName}" 的监控序列，或其模式不为 'monitor'`);
                 }
@@ -1532,6 +1562,11 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     delete appState.threads[monitorThreadId];
                     delete appState.activeMonitors[task.sequenceName];
                     logToScreen(`成功发送停止信号到监控 [${task.sequenceName}]。`);
+                    
+                    // --- 修复 1: (UI同步) 停止后，手动更新 👁️ 按钮状态 ---
+                    updateMonitorStatusUI();
+                    // --- 修复 1 结束 ---
+                    
                 } else {
                     logToScreen(`警告: 监控 [${task.sequenceName}] 未在运行或未找到。`);
                 }
@@ -1957,8 +1992,11 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                     if (!p) {
                                         let findOptions = { threshold: trigger.threshold || 0.8 };
                                         if (trigger.search_area && trigger.search_area.length === 4) {
+                                            // --- 核心修复：使用 calculatePaddedRegion 来限制 search_area ---
                                             let [x1, y1, x2, y2] = trigger.search_area;
-                                            findOptions.region = [x1, y1, x2 - x1, y2 - y1];
+                                            let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                                            findOptions.region = calculatePaddedRegion(searchBounds, 0); // 0 padding
+                                            // --- 修复结束 ---
                                         }
                                         p = images.findImage(capturedImage, template, findOptions);
                                         if (p) {
@@ -1992,8 +2030,11 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                         if (!ocrTarget) {
                             let ocrOptions = { useSlim: true };
                             if (trigger.search_area && trigger.search_area.length === 4) {
+                                // --- 核心修复：使用 calculatePaddedRegion 来限制 search_area ---
                                 let [x1, y1, x2, y2] = trigger.search_area;
-                                ocrOptions.region = [x1, y1, x2 - x1, y2 - y1];
+                                let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                                ocrOptions.region = calculatePaddedRegion(searchBounds, 0); // 0 padding
+                                // --- 修复结束 ---
                             }
                             let ocrResults = ocr.paddle.detect(capturedImage, ocrOptions);
                             ocrTarget = ocrResults.find(r => r.label.includes(trigger.target));
@@ -2886,6 +2927,31 @@ function addStopMonitorTask(targetSequence, onComplete) {
         }
         if (onComplete) onComplete();
     });
+}
+/**
+ * 获取【实时】的屏幕物理宽度
+ */
+function getRealWidth() {
+    try {
+        // 使用 Android context 获取最新的显示指标
+        return context.getResources().getDisplayMetrics().widthPixels;
+    } catch(e) {
+        logErrorToScreen("getRealWidth Gagal: " + e);
+        return device.width; // 备用方案
+    }
+}
+
+/**
+ * 获取【实时】的屏幕物理高度
+ */
+function getRealHeight() {
+    try {
+        // 使用 Android context 获取最新的显示指标
+        return context.getResources().getDisplayMetrics().heightPixels;
+    } catch(e) {
+        logErrorToScreen("getRealHeight Gagal: " + e);
+        return device.height; // 备用方案
+    }
 }
 // =================================================================================
 // --- 在这里粘贴新函数 (主UI编辑器) ---
@@ -5201,6 +5267,7 @@ function validateNumericInput(inputStr, allowFloat = false, allowSigned = false)
 // --- 在这里粘贴新函数 ---
 // =================================================================================
 /**
+ * (V6 - 最终版：X/Y 独立OOB检测)
  * 计算带扩边（Padding）并限制在屏幕范围内的区域
  * @param {object} bounds - 原始边界 (可以是 {left, top, right, bottom} 或 {x, y, width, height})
  * @param {number} padding - 扩边像素
@@ -5208,27 +5275,69 @@ function validateNumericInput(inputStr, allowFloat = false, allowSigned = false)
  */
 function calculatePaddedRegion(bounds, padding) {
     try {
-        let x1, y1, x2, y2;
-        padding = padding || 0; // 确保 padding 是一个数字
+        let x1_orig, y1_orig, x2_orig, y2_orig;
+        padding = padding || 0; 
+        
+        const realWidth = getRealWidth();
+        const realHeight = getRealHeight();
 
+        // 1. 根据 bounds 类型，计算出带 padding 的 "原始" 坐标
         if (bounds.left !== undefined && bounds.right !== undefined) {
-            // OCR-style bounds {left, top, right, bottom}
-            x1 = Math.max(0, bounds.left - padding);
-            y1 = Math.max(0, bounds.top - padding);
-            x2 = Math.min(device.width, bounds.right + padding);
-            y2 = Math.min(device.height, bounds.bottom + padding);
+            x1_orig = bounds.left - padding;
+            y1_orig = bounds.top - padding;
+            x2_orig = bounds.right + padding;
+            y2_orig = bounds.bottom + padding;
         } else if (bounds.x !== undefined && bounds.y !== undefined && bounds.width !== undefined && bounds.height !== undefined) {
-            // Image-style bounds {x, y, width, height}
-            x1 = Math.max(0, bounds.x - padding);
-            y1 = Math.max(0, bounds.y - padding);
-            x2 = Math.min(device.width, bounds.x + bounds.width + padding);
-            y2 = Math.min(device.height, bounds.y + bounds.height + padding);
+            x1_orig = bounds.x - padding;
+            y1_orig = bounds.y - padding;
+            x2_orig = bounds.x + bounds.width + padding;
+            y2_orig = bounds.y + bounds.height + padding;
         } else {
             logErrorToScreen("[calculatePaddedRegion] 无法识别的 bounds 格式: " + JSON.stringify(bounds));
             return [0, 0, 10, 10]; // Failsafe
         }
         
-        return [x1, y1, Math.max(0, x2 - x1), Math.max(0, y2 - y1)]; // [x, y, w, h]
+        let final_x1, final_y1, final_x2, final_y2;
+
+        // 2. 【X 轴检查】检查 X 坐标是否完全 OOB (Out-of-Bounds)
+        // (例如 x1=1560 > realWidth=1080)
+        if (x1_orig >= realWidth || x2_orig <= 0) {
+            // X 坐标已失效, 强制全宽搜索
+            logToScreen(`[calculatePaddedRegion] 检测到 X 轴OOB (x=${x1_orig}), 强制全宽搜索。`);
+            final_x1 = 0;
+            final_x2 = realWidth;
+        } else {
+            // X 坐标未失效，使用标准钳制逻辑
+            final_x1 = Math.max(0, Math.min(x1_orig, realWidth - 1));
+            final_x2 = Math.max(0, Math.min(x2_orig, realWidth));
+            // 确保 x1 < x2
+            if (final_x1 >= final_x2) {
+                final_x1 = (final_x2 > 0) ? final_x2 - 1 : 0;
+            }
+        }
+
+        // 3. 【Y 轴检查】(新!) 检查 Y 坐标是否完全 OOB
+        // (例如 y1=1800 > realHeight=1080)
+        if (y1_orig >= realHeight || y2_orig <= 0) {
+            // Y 坐标已失效, 强制全高搜索
+            logToScreen(`[calculatePaddedRegion] 检测到 Y 轴OOB (y=${y1_orig}), 强制全高搜索。`);
+            final_y1 = 0;
+            final_y2 = realHeight;
+        } else {
+            // Y 坐标未失效，使用标准钳制逻辑
+            final_y1 = Math.max(0, Math.min(y1_orig, realHeight - 1));
+            final_y2 = Math.max(0, Math.min(y2_orig, realHeight));
+            // 确保 y1 < y2
+            if (final_y1 >= final_y2) {
+                final_y1 = (final_y2 > 0) ? final_y2 - 1 : 0;
+            }
+        }
+
+        // 4. 计算最终宽高
+        let w = final_x2 - final_x1;
+        let h = final_y2 - final_y1;
+
+        return [final_x1, final_y1, Math.max(0, w), Math.max(0, h)];
 
     } catch (e) {
         logErrorToScreen("[calculatePaddedRegion] Error: " + e);
@@ -5249,12 +5358,17 @@ function safePress(x, y, duration) {
     try {
         // 1. 将最终坐标限制在屏幕范围内
         // (使用 Math.round 以防坐标是浮点数, 并减 1 防止越界)
-        let clampedX = Math.round(Math.max(0, Math.min(x, device.width - 1)));
-        let clampedY = Math.round(Math.max(0, Math.min(y, device.height - 1)));
+         // (需要 getRealWidth/Height 和 _clamp 辅助函数)
+        const realWidth = getRealWidth();
+        const realHeight = getRealHeight();
+        let ry=realHeight;
+        let rx=realWidth;
+        let clampedX = Math.round(Math.max(0, Math.min(x, rx - 1)));
+        let clampedY = Math.round(Math.max(0, Math.min(y, ry - 1)));
         
         // 2. 检查坐标是否被修正
         if (clampedX !== Math.round(x) || clampedY !== Math.round(y)) {
-             logErrorToScreen(`[safePress] 坐标越界修正: (${Math.round(x)}, ${Math.round(y)}) -> (${clampedX}, ${clampedY})`);
+             logErrorToScreen(`[safePress] 坐标越界修正: (${Math.round(x)}, ${Math.round(y)}) -> (${clampedX}, ${clampedY})(屏幕: ${rx}x${ry})`);
         }
 
         // 3. 执行点击 (调用 Auto.js 原始的 press() 函数)
