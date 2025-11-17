@@ -195,7 +195,7 @@ function reorderByPriority(sequence, triggers) {
 // =================================================================================
 const CONSTANTS = {
     // [新增] 新增图片截图
-    VERSION: "5.2.1 横屏坐标越界修正 ",
+    VERSION: "5.2.1 修复主序列启动监控",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
