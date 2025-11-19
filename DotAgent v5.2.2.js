@@ -195,7 +195,7 @@ function reorderByPriority(sequence, triggers) {
 // =================================================================================
 const CONSTANTS = {
     // [新增] 新增图片截图
-    VERSION: "5.2.1 修复主序列启动监控",
+    VERSION: "5.2.2 去掉toast，添加触发器未触发动作",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -1131,12 +1131,6 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                             appState.currentWaitTask.remaining = totalWaitTime - timeWaited;
                         }
                         // --- 修改结束 ---
-
-                        if (timeWaited >= nextToastPoint && (totalWaitTime - timeWaited) > 0) {
-                            let remainingSeconds = Math.round((totalWaitTime - timeWaited) / 1000);
-                            toast(`等待中... 剩余约 ${remainingSeconds} 秒`);
-                            nextToastPoint += toastThreshold;
-                        }
                     }
                 } finally {
                     // --- 核心修改：清除倒计时 ---
@@ -1754,6 +1748,50 @@ function executeTriggerAction(trigger, location) {
         logToScreen(`...无后续序列，动作执行完毕。`);
     }
 }
+/**
+ * (新函数)
+ * 当监控触发器 "未找到" 目标时，执行 onFail 动作
+ * @param {object} trigger - 触发器对象
+ */
+function executeMonitorFailAction(trigger) {
+    if (!trigger.onFail) return;
+    const failAction = trigger.onFail;
+    const triggerName = trigger.target || '未知触发器';
+
+    logToScreen(`监控未命中: [${triggerName}] 未找到, 执行 onFail 动作 [${failAction.action}]...`);
+
+    if (failAction.delayMs > 0) {
+        logToScreen(`动作延迟 ${failAction.delayMs}ms...`);
+        sleep(failAction.delayMs);
+    }
+
+    switch (failAction.action) {
+        case 'back':
+            back();
+            sleep(appSettings.clickDelayMs);
+            break;
+        case 'launch_app':
+            if (failAction.appName) {
+                app.launchApp(failAction.appName);
+                sleep(appSettings.clickDelayMs);
+            }
+            break;
+        case 'execute_sequence':
+            if (failAction.sequenceName) {
+                const sequenceToExecute = sequences[failAction.sequenceName];
+                if (sequenceToExecute) {
+                    executeSequence(sequenceToExecute.tasks, `子序列 (${sequenceToExecute.name})`, 'monitor');
+                } else {
+                    logErrorToScreen(`...错误! 找不到名为 "${failAction.sequenceName}" 的 onFail 序列。`);
+                }
+            }
+            break;
+        case 'skip':
+        default:
+            // Do nothing
+            break;
+    }
+}
 function makeId(t) {
   return ((t && t.type) ? t.type : "image") + "::" + ((t && t.target) ? t.target : "");
 }
@@ -2060,6 +2098,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     }
 
                     if (foundLocation) {
+                        // --- 目标找到 (onSuccess) ---
                         executeTriggerAction(trigger, foundLocation);
                         triggerFiredInCycle = true;
                         // 优先队列：命中后前置
@@ -2067,6 +2106,15 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                         if (trigger.cooldownMs > 0) {
                             triggerCooldowns[triggerId] = new Date().getTime() + trigger.cooldownMs;
                         }
+                    } else {
+                        // --- 目标未找到 (onFail) [新逻辑] ---
+                        if (trigger.onFail && trigger.onFail.action && trigger.onFail.action !== 'skip') {
+                            // 执行 onFail 动作
+                            executeMonitorFailAction(trigger);
+                            // 标记为已触发，这样“默认任务”就不会运行了
+                            triggerFiredInCycle = true;
+                        }
+                        // --- onFail 逻辑结束 ---
                     }
                 });
 
@@ -4045,25 +4093,38 @@ function renderTriggerManager(sequence, sequenceKey) {
     });
 }
 
-
+/**
+ * (V8 - 最终修正版：修复了 onFail 字段名不匹配导致的保存失效问题)
+ * 显示触发器编辑器弹窗 (Level 4)
+ */
 function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     const isNew = !trigger;
     const triggers = sequence.triggers || [];
+    
+    // 1. 准备数据副本
     const currentTrigger = isNew ?
-        { type: 'image', target: 'new_image.png', threshold: 0.8, action: { type: 'click', delayMs: 0, offsetX: 0, offsetY: 0 }, cooldownMs: 0, cachePadding: (appSettings.defaultCachePadding || 50) } :
+        { type: 'image', target: 'new_image.png', threshold: 0.8, action: { type: 'click', delayMs: 0 }, cooldownMs: 0, cachePadding: (appSettings.defaultCachePadding || 50), onFail: { action: 'skip' }, enabled: true } : 
         JSON.parse(JSON.stringify(trigger));
 
+    // 确保对象结构完整
     if (!currentTrigger.action) currentTrigger.action = { type: 'click' };
+    if (!currentTrigger.onFail) currentTrigger.onFail = { action: 'skip' }; 
 
-    const currentOrder = isNew ? triggers.length + 1 : triggers.indexOf(trigger) + 1;
+    const originalIndex = isNew ? -1 : triggers.indexOf(trigger);
+    const currentOrder = isNew ? triggers.length + 1 : originalIndex + 1;
+
+    if (!isNew && currentOrder === 0) {
+        toast("错误：无法定位原始触发器");
+        return; 
+    }
 
     const callableSequences = Object.entries(sequences)
         .filter(([key, seq]) => key !== sequenceKey)
         .map(([key, seq]) => ({ id: key, name: seq.name || key }));
-
     const callableSequenceNames = callableSequences.length > 0 ? callableSequences.map(s => s.name) : ["无可用序列"];
     const sequenceEntries = callableSequenceNames.map(name => name.replace(/\|/g, ' ')).join('|');
 
+    // --- XML 界面 ---
     const viewXML = `
         <vertical padding="16">
             <horizontal id="order_row" gravity="center_vertical">
@@ -4072,16 +4133,15 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
             </horizontal>
             <text>触发类型:</text>
             <spinner id="type" entries="图像|文本(OCR)|计时器结束" />
-            <text id="target_label">目标 (图片文件名或文本内容):</text>
+            <text id="target_label">目标:</text>
             <horizontal>
                 <input id="target" layout_weight="1" />
                 <button id="browse_trigger_image" text="..." w="auto" style="Widget.AppCompat.Button.Borderless.Colored" visibility="gone"/>
             </horizontal>
             <vertical id="image_options">
-                <text>相似度 (0.1 - 1.0):</text>
-                <input id="threshold" inputType="numberDecimal" />
+                <text>相似度 (0.1 - 1.0):</text><input id="threshold" inputType="numberDecimal" />
                  <vertical id="image_cache_info" marginTop="5" visibility="gone">
-                    <text textSize="12sp">缓存的位置数据:</text>
+                    <text textSize="12sp">缓存位置:</text>
                     <horizontal>
                         <input id="image_cached_bounds_display" enabled="false" layout_weight="1" textSize="10sp"/>
                         <button id="image_copy_cache_btn" text="写入搜索区" style="Widget.AppCompat.Button.Borderless.Colored" />
@@ -4091,7 +4151,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
             </vertical>
              <vertical id="ocr_options" visibility="gone">
                  <vertical id="ocr_cache_info" marginTop="5" visibility="gone">
-                    <text textSize="12sp">缓存的位置数据:</text>
+                    <text textSize="12sp">缓存位置:</text>
                     <horizontal>
                         <input id="ocr_cached_bounds_display" enabled="false" layout_weight="1" textSize="10sp"/>
                         <button id="ocr_copy_cache_btn" text="写入搜索区" style="Widget.AppCompat.Button.Borderless.Colored" />
@@ -4100,79 +4160,57 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
                 </vertical>
             </vertical>
             
-            {/* --- 核心修改 3A: 搜索区域UI --- */}
-            <text id="search_area_label">搜索区域 (默认全屏 0,0,${device.width},${device.height}):</text>
+            <text id="search_area_label">搜索区域 (X1, Y1, X2, Y2):</text>
             <horizontal>
-                <input id="sa_x1" hint="X1" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
-                <input id="sa_y1" hint="Y1" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
-                <input id="sa_x2" hint="X2" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
-                <input id="sa_y2" hint="Y2" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
+                <input id="sa_x1" hint="X1" inputType="number" layout_weight="1" textSize="14sp"/><input id="sa_y1" hint="Y1" inputType="number" layout_weight="1" textSize="14sp"/>
+                <input id="sa_x2" hint="X2" inputType="number" layout_weight="1" textSize="14sp"/><input id="sa_y2" hint="Y2" inputType="number" layout_weight="1" textSize="14sp"/>
             </horizontal>
-            {/* --- 修改结束 --- */}
-
-            <text id="cache_padding_label">缓存搜索区扩边 (Padding) - 可选:</text>
-            <input id="cache_padding_input" hint="例如: 50 (像素)" inputType="number" />
-            <text>触发后冷却 (ms):</text>
-            <input id="cooldownMs" inputType="number" />
+            <text id="cache_padding_label">缓存扩边 (Padding):</text>
+            <input id="cache_padding_input" inputType="number" />
+            <text>冷却 (ms):</text><input id="cooldownMs" inputType="number" />
             
-            <text text="触发后动作" marginTop="10" textStyle="bold"/>
-            <text>主要动作:</text>
-            <spinner id="actionType" entries="点击目标|执行返回|跳过(无操作)|滑动|启动App" />
-            <text>动作延迟 (ms):</text>
-            <input id="actionDelayMs" inputType="number" />
-
+            <text text="触发后动作 (onSuccess)" marginTop="10" textStyle="bold" textColor="{{CONSTANTS.UI.THEME.ACCENT_GRADIENT_START}}"/>
+            <text>类型:</text><spinner id="actionType" entries="点击目标|执行返回|跳过(无操作)|滑动|启动App" />
+            <text>延迟 (ms):</text><input id="actionDelayMs" inputType="number" />
             <vertical id="click_offset_fields" visibility="gone">
-                <horizontal>
-                    <text>点击OffsetX:</text><input id="click_offsetX" inputType="numberSigned" layout_weight="1"/>
-                    <text>点击OffsetY:</text><input id="click_offsetY" inputType="numberSigned" layout_weight="1"/>
-                </horizontal>
+                <horizontal><text>OffX:</text><input id="click_offsetX" inputType="numberSigned" layout_weight="1"/><text>OffY:</text><input id="click_offsetY" inputType="numberSigned" layout_weight="1"/></horizontal>
             </vertical>
-            
-            {/* --- 核心修改 1A: 修改滑动设置 --- */}
             <vertical id="swipe_fields" visibility="gone">
-                <text>滑动模式:</text>
-                <spinner id="swipeMode" entries="向量 (从目标中心)|坐标 (固定位置)" />
-                
-                {/* 模式1: 向量 (旧) */}
+                <text>滑动模式:</text><spinner id="swipeMode" entries="向量 (从目标中心)|坐标 (固定位置)" />
                 <vertical id="swipe_vector_fields">
-                    <text>滑动向量 (从目标中心开始):</text>
-                    <horizontal>
-                        <text>X偏移(dx):</text><input id="swipe_dx" inputType="numberSigned" layout_weight="1"/>
-                        <text>Y偏移(dy):</text><input id="swipe_dy" inputType="numberSigned" layout_weight="1"/>
-                    </horizontal>
-                    <text>滑动时长(ms):</text><input id="swipe_duration_vector" inputType="number"/>
+                    <horizontal><text>dx:</text><input id="swipe_dx" inputType="numberSigned" layout_weight="1"/><text>dy:</text><input id="swipe_dy" inputType="numberSigned" layout_weight="1"/></horizontal>
+                    <text>时长:</text><input id="swipe_duration_vector" inputType="number"/>
                 </vertical>
-                
-                {/* 模式2: 坐标 (新) */}
                 <vertical id="swipe_coords_fields" visibility="gone">
-                    <text>滑动坐标 (固定位置):</text>
-                    <horizontal><text>开始X:</text><input id="swipe_startX" inputType="number" layout_weight="1"/><text>开始Y:</text><input id="swipe_startY" inputType="number" layout_weight="1"/></horizontal>
-                    <horizontal><text>结束X:</text><input id="swipe_endX" inputType="number" layout_weight="1"/><text>结束Y:</text><input id="swipe_endY" inputType="number" layout_weight="1"/></horizontal>
-                    <text>滑动时长(ms):</text><input id="swipe_duration_coords" inputType="number"/>
+                    <horizontal><text>SX:</text><input id="swipe_startX" inputType="number" layout_weight="1"/><text>SY:</text><input id="swipe_startY" inputType="number" layout_weight="1"/></horizontal>
+                    <horizontal><text>EX:</text><input id="swipe_endX" inputType="number" layout_weight="1"/><text>EY:</text><input id="swipe_endY" inputType="number" layout_weight="1"/></horizontal>
+                    <text>时长:</text><input id="swipe_duration_coords" inputType="number"/>
                 </vertical>
             </vertical>
-            {/* --- 修改结束 --- */}
-
-            <vertical id="launch_app_fields" visibility="gone">
-                <text>要启动的应用名称:</text>
-                <input id="launch_app_name" />
-            </vertical>
-            
-            <horizontal marginTop="10" gravity="center_vertical">
+            <vertical id="launch_app_fields" visibility="gone"><text>App名称:</text><input id="launch_app_name" /></vertical>
+            <horizontal marginTop="5" gravity="center_vertical">
                 <checkbox id="callSequenceCheckbox" text="然后调用序列"/>
                 <spinner id="sequenceName" entries="${sequenceEntries}" visibility="gone"/>
             </horizontal>
+
+            <text text="未找到时动作 (onFail)" marginTop="15" textStyle="bold" textColor="#FF5252"/>
+            <text>类型:</text><spinner id="onFailActionType" entries="跳过(无操作)|执行返回|启动App|调用序列" />
+            <text>延迟 (ms):</text><input id="onFailActionDelayMs" inputType="number" />
+            <vertical id="onFail_launch_app_fields" visibility="gone"><text>App名称:</text><input id="onFail_launch_app_name" /></vertical>
+            <horizontal id="onFail_callSequence_fields" marginTop="5" gravity="center_vertical" visibility="gone">
+                <text>调用序列:</text><spinner id="onFailSequenceName" entries="${sequenceEntries}" />
+            </horizontal>
+
         </vertical>
     `;
     const view = ui.inflate(viewXML, null, false);
 
-    if (isNew) {
-        view.order_row.setVisibility(8); // Hide order field for new triggers
-    }
+    // --- UI 初始化 ---
+    if (isNew) view.order_row.setVisibility(8); 
 
     const typeMap = { 'image': 0, 'ocr': 1, 'timer_end': 2 };
-    const currentTypeIndex = typeMap[currentTrigger.type] || 0;
-    view.type.setSelection(currentTypeIndex);
+    view.type.setSelection(typeMap[currentTrigger.type] || 0);
+    
     function updateTriggerFields(position) {
         const isImage = position === 0;
         const isOcr = position === 1;
@@ -4180,270 +4218,243 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
         view.image_options.setVisibility(isImage ? 0 : 8);
         view.browse_trigger_image.setVisibility(isImage ? 0 : 8); 
         view.ocr_options.setVisibility(isOcr ? 0 : 8);
-        
-        // --- 核心修改 3B: 隐藏/显示新的4个框 ---
-        const searchVisibility = isTimer ? 8 : 0;
-        view.search_area_label.setVisibility(searchVisibility);
-        view.sa_x1.setVisibility(searchVisibility);
-        view.sa_y1.setVisibility(searchVisibility);
-        view.sa_x2.setVisibility(searchVisibility);
-        view.sa_y2.setVisibility(searchVisibility);
-        // --- 修改结束 ---
-
+        view.search_area_label.setVisibility(isTimer ? 8 : 0);
+        view.sa_x1.setVisibility(isTimer ? 8 : 0); view.sa_y1.setVisibility(isTimer ? 8 : 0);
+        view.sa_x2.setVisibility(isTimer ? 8 : 0); view.sa_y2.setVisibility(isTimer ? 8 : 0);
         view.cache_padding_input.setVisibility(isTimer ? 8 : 0);
         view.cache_padding_label.setVisibility(isTimer ? 8 : 0);
-        
-        view.target_label.setText(isTimer ? "目标 (计时器名称):" : "目标 (图片文件名或文本内容):");
+        view.target_label.setText(isTimer ? "目标 (计时器名称):" : "目标:");
     }
-
-    updateTriggerFields(currentTypeIndex);
-    view.type.setOnItemSelectedListener({ onItemSelected: (p, v, position, id) => updateTriggerFields(position) });
+    updateTriggerFields(typeMap[currentTrigger.type] || 0);
+    view.type.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => updateTriggerFields(pos) });
     
-    view.browse_trigger_image.click(() => {
-        showImageSelectorDialog((fileName) => {
-            view.target.setText(fileName);
-        });
-    });
-    
+    view.browse_trigger_image.click(() => { showImageSelectorDialog((n) => view.target.setText(n)); });
     view.target.setText(currentTrigger.target);
     view.threshold.setText(String(currentTrigger.threshold || 0.8));
     view.cooldownMs.setText(String(currentTrigger.cooldownMs || 0));
-    
-    // --- 核心修改 3B: 加载搜索区域 ---
     if (currentTrigger.search_area) {
-        view.sa_x1.setText(String(currentTrigger.search_area[0]));
-        view.sa_y1.setText(String(currentTrigger.search_area[1]));
-        view.sa_x2.setText(String(currentTrigger.search_area[2]));
-        view.sa_y2.setText(String(currentTrigger.search_area[3]));
+        view.sa_x1.setText(String(currentTrigger.search_area[0])); view.sa_y1.setText(String(currentTrigger.search_area[1]));
+        view.sa_x2.setText(String(currentTrigger.search_area[2])); view.sa_y2.setText(String(currentTrigger.search_area[3]));
     }
-    
     view.cache_padding_input.setText(String(currentTrigger.cachePadding !== undefined ? currentTrigger.cachePadding : (appSettings.defaultCachePadding || 50)));
 
+    // Cache UI
     if (currentTrigger.cachedBounds) {
+        const b = currentTrigger.cachedBounds;
         if (currentTrigger.type === 'ocr') {
             view.ocr_cache_info.setVisibility(0);
-            view.ocr_cached_bounds_display.setText(`[${currentTrigger.cachedBounds.left}, ${currentTrigger.cachedBounds.top}, ${currentTrigger.cachedBounds.right}, ${currentTrigger.cachedBounds.bottom}]`);
-            view.ocr_clear_cache_btn.click(() => {
-                currentTrigger.cachedBounds = null;
-                view.ocr_cache_info.setVisibility(8);
-                toast("缓存已标记为清除，保存后生效。");
-            });
-            view.ocr_copy_cache_btn.click(() => {
-                const b = currentTrigger.cachedBounds;
-                view.sa_x1.setText(String(b.left));
-                view.sa_y1.setText(String(b.top));
-                view.sa_x2.setText(String(b.right));
-                view.sa_y2.setText(String(b.bottom));
-                toast("缓存区域已写入搜索区");
-            });
+            view.ocr_cached_bounds_display.setText(`[${b.left},${b.top},${b.right},${b.bottom}]`);
+            view.ocr_clear_cache_btn.click(() => { currentTrigger.cachedBounds = null; view.ocr_cache_info.setVisibility(8); });
+            view.ocr_copy_cache_btn.click(() => { view.sa_x1.setText(String(b.left)); view.sa_y1.setText(String(b.top)); view.sa_x2.setText(String(b.right)); view.sa_y2.setText(String(b.bottom)); });
         } else if (currentTrigger.type === 'image') {
             view.image_cache_info.setVisibility(0);
-            view.image_cached_bounds_display.setText(`(x:${currentTrigger.cachedBounds.x}, y:${currentTrigger.cachedBounds.y}, w:${currentTrigger.cachedBounds.width}, h:${currentTrigger.cachedBounds.height})`);
-            view.image_clear_cache_btn.click(() => {
-                currentTrigger.cachedBounds = null;
-                view.image_cache_info.setVisibility(8);
-                toast("缓存已标记为清除，保存后生效。");
-            });
-            view.image_copy_cache_btn.click(() => {
-                const b = currentTrigger.cachedBounds;
-                view.sa_x1.setText(String(b.x));
-                view.sa_y1.setText(String(b.y));
-                view.sa_x2.setText(String(b.x + b.width));
-                view.sa_y2.setText(String(b.y + b.height));
-                toast("缓存区域已写入搜索区");
-            });
+            view.image_cached_bounds_display.setText(`x:${b.x},y:${b.y},w:${b.width},h:${b.height}`);
+            view.image_clear_cache_btn.click(() => { currentTrigger.cachedBounds = null; view.image_cache_info.setVisibility(8); });
+            view.image_copy_cache_btn.click(() => { view.sa_x1.setText(String(b.x)); view.sa_y1.setText(String(b.y)); view.sa_x2.setText(String(b.x + b.width)); view.sa_y2.setText(String(b.y + b.height)); });
         }
     }
 
-    const action = currentTrigger.action;
-    const actionTypeMap = { 'click': 0, 'back': 1, 'skip': 2, 'swipe': 3, 'launch_app': 4 };
-    const currentActionIndex = actionTypeMap[action.type] || 0;
-    view.actionType.setSelection(currentActionIndex);
-    view.actionDelayMs.setText(String(action.delayMs || 0));
+    // --- 动作 UI 填充 logic (Success) ---
+    const actionMap = { 'click': 0, 'back': 1, 'skip': 2, 'swipe': 3, 'launch_app': 4 };
+    view.actionType.setSelection(actionMap[currentTrigger.action.type] || 0);
+    view.actionDelayMs.setText(String(currentTrigger.action.delayMs || 0));
 
-    // --- 核心修改 1B: 修改 ActionFields 逻辑 ---
-    function updateActionFields(position) {
-        view.click_offset_fields.setVisibility(position === 0 ? 0 : 8);
-        view.swipe_fields.setVisibility(position === 3 ? 0 : 8); // 显示滑动组
-        view.launch_app_fields.setVisibility(position === 4 ? 0 : 8);
-
-        if (position === 0) { // Click
-            view.click_offsetX.setText(String(action.offsetX || 0));
-            view.click_offsetY.setText(String(action.offsetY || 0));
-        
-        } else if (position === 3) { // Swipe (加载数据)
-            
-            // --- 默认坐标模式 ---
-            const isCoords = !!action.swipeCoords || !action.swipeVector; 
+    function updateActionFields(pos) {
+        view.click_offset_fields.setVisibility(pos === 0 ? 0 : 8);
+        view.swipe_fields.setVisibility(pos === 3 ? 0 : 8); 
+        view.launch_app_fields.setVisibility(pos === 4 ? 0 : 8);
+        if (pos === 0) { // Click
+            view.click_offsetX.setText(String(currentTrigger.action.offsetX || 0));
+            view.click_offsetY.setText(String(currentTrigger.action.offsetY || 0));
+        } else if (pos === 3) { // Swipe
+            const isCoords = !!currentTrigger.action.swipeCoords || !currentTrigger.action.swipeVector; 
             view.swipeMode.setSelection(isCoords ? 1 : 0);
-            
-            // 切换子视图
             view.swipe_vector_fields.setVisibility(isCoords ? 8 : 0);
             view.swipe_coords_fields.setVisibility(isCoords ? 0 : 8);
-
             if (isCoords) {
-                // --- 添加默认值 ---
-                const coords = action.swipeCoords || {}; // Get existing coords or an empty object
-                view.swipe_startX.setText(String(coords.startX || 1000));
-                view.swipe_startY.setText(String(coords.startY || 1000));
-                view.swipe_endX.setText(String(coords.endX || 1000));
-                view.swipe_endY.setText(String(coords.endY || 500));
-                view.swipe_duration_coords.setText(String(coords.duration || appSettings.swipe.duration));
+                const c = currentTrigger.action.swipeCoords || {}; 
+                view.swipe_startX.setText(String(c.startX||1000)); view.swipe_startY.setText(String(c.startY||1000));
+                view.swipe_endX.setText(String(c.endX||1000)); view.swipe_endY.setText(String(c.endY||500));
+                view.swipe_duration_coords.setText(String(c.duration||appSettings.swipe.duration));
             } else {
-                // 默认是 vector
-                view.swipe_dx.setText(String((action.swipeVector || {}).dx || 0));
-                view.swipe_dy.setText(String((action.swipeVector || {}).dy || 0));
-                view.swipe_duration_vector.setText(String((action.swipeVector || {}).duration || appSettings.swipe.duration));
+                const v = currentTrigger.action.swipeVector || {};
+                view.swipe_dx.setText(String(v.dx||0)); view.swipe_dy.setText(String(v.dy||0));
+                view.swipe_duration_vector.setText(String(v.duration||appSettings.swipe.duration));
             }
-        
-        } else if (position === 4 && action.appName) { // Launch App
-            view.launch_app_name.setText(action.appName);
+        } else if (pos === 4) {
+            view.launch_app_name.setText(currentTrigger.action.appName || "");
         }
     }
+    updateActionFields(actionMap[currentTrigger.action.type] || 0);
+    view.actionType.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => updateActionFields(pos) });
+    view.swipeMode.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => { view.swipe_vector_fields.setVisibility(pos === 0 ? 0 : 8); view.swipe_coords_fields.setVisibility(pos === 1 ? 0 : 8); } });
     
-    updateActionFields(currentActionIndex);
-    view.actionType.setOnItemSelectedListener({ onItemSelected: (p, v, position, id) => updateActionFields(position) });
-
-    // 监听 "滑动模式" 下拉框
-    view.swipeMode.setOnItemSelectedListener({
-        onItemSelected: (p, v, position, id) => {
-            // 0 = 向量, 1 = 坐标
-            view.swipe_vector_fields.setVisibility(position === 0 ? 0 : 8);
-            view.swipe_coords_fields.setVisibility(position === 1 ? 0 : 8);
-        }
-    });
-    // --- 修改结束 ---
-
-    if (action.sequenceName) {
+    if (currentTrigger.action.sequenceName) {
         view.callSequenceCheckbox.setChecked(true);
         view.sequenceName.setVisibility(0);
-        const selectedSeqIndex = callableSequences.findIndex(s => s.id === action.sequenceName);
-        if (selectedSeqIndex > -1) {
-            view.sequenceName.setSelection(selectedSeqIndex);
+        const sIdx = callableSequences.findIndex(s => s.id === currentTrigger.action.sequenceName);
+        if (sIdx > -1) view.sequenceName.setSelection(sIdx);
+    }
+    view.callSequenceCheckbox.setOnCheckedChangeListener((c, isChecked) => { view.sequenceName.setVisibility(isChecked ? 0 : 8); });
+
+    // --- 动作 UI 填充 logic (Fail) ---
+    const onFailMap = { 'skip': 0, 'back': 1, 'launch_app': 2, 'execute_sequence': 3 };
+    view.onFailActionType.setSelection(onFailMap[currentTrigger.onFail.action] || 0); // onFail uses .action
+    view.onFailActionDelayMs.setText(String(currentTrigger.onFail.delayMs || 0));
+
+    function updateOnFailFields(pos) {
+        view.onFail_launch_app_fields.setVisibility(pos === 2 ? 0 : 8);
+        view.onFail_callSequence_fields.setVisibility(pos === 3 ? 0 : 8);
+        if (pos === 2) {
+            view.onFail_launch_app_name.setText(currentTrigger.onFail.appName || "");
+        } else if (pos === 3) {
+            const sIdx = callableSequences.findIndex(s => s.id === currentTrigger.onFail.sequenceName);
+            if (sIdx > -1) view.onFailSequenceName.setSelection(sIdx);
         }
     }
-    view.callSequenceCheckbox.setOnCheckedChangeListener((checkbox, isChecked) => {
-        view.sequenceName.setVisibility(isChecked ? 0 : 8);
-    });
+    updateOnFailFields(onFailMap[currentTrigger.onFail.action] || 0);
+    view.onFailActionType.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => updateOnFailFields(pos) });
 
+
+    // ============================================================
+    // 【统一的读取逻辑 (Helper Function - V8 修正版)】
+    // ============================================================
+    function readActionFromUI(isFail) {
+        let typeIndex, delayStr;
+        
+        if (!isFail) { // Success Action
+             typeIndex = view.actionType.getSelectedItemPosition();
+             delayStr = view.actionDelayMs.getText().toString();
+        } else { // Fail Action
+             typeIndex = view.onFailActionType.getSelectedItemPosition();
+             delayStr = view.onFailActionDelayMs.getText().toString();
+        }
+
+        // 声明在外部，避免块级作用域错误
+        let currentTypeStr = "";
+        
+        if (!isFail) {
+            let sTypes = ['click', 'back', 'skip', 'swipe', 'launch_app'];
+            currentTypeStr = sTypes[typeIndex];
+        } else {
+            let fTypes = ['skip', 'back', 'launch_app', 'execute_sequence'];
+            currentTypeStr = fTypes[typeIndex];
+        }
+
+        let actionObj = {};
+        // 【V8 核心修复】：
+        // Success 动作使用 .type (历史遗留)
+        // Fail 动作使用 .action (为了与 Task 保持一致)
+        if (isFail) {
+            actionObj.action = currentTypeStr;
+        } else {
+            actionObj.type = currentTypeStr;
+        }
+        
+        actionObj.delayMs = parseInt(delayStr) || 0;
+
+        switch (currentTypeStr) {
+            case 'click':
+                actionObj.offsetX = parseInt(view.click_offsetX.getText().toString()) || 0;
+                actionObj.offsetY = parseInt(view.click_offsetY.getText().toString()) || 0;
+                break;
+                
+            case 'swipe':
+                const isCoords = view.swipeMode.getSelectedItemPosition() === 1;
+                if (!isCoords) { // Vector
+                    actionObj.swipeVector = {
+                        dx: parseInt(view.swipe_dx.getText().toString()) || 0,
+                        dy: parseInt(view.swipe_dy.getText().toString()) || 0,
+                        duration: parseInt(view.swipe_duration_vector.getText().toString()) || appSettings.swipe.duration
+                    };
+                } else { // Coords
+                    actionObj.swipeCoords = {
+                        startX: parseInt(view.swipe_startX.getText().toString() || "1000"),
+                        startY: parseInt(view.swipe_startY.getText().toString() || "1000"),
+                        endX: parseInt(view.swipe_endX.getText().toString() || "1000"),
+                        endY: parseInt(view.swipe_endY.getText().toString() || "500"),
+                        duration: parseInt(view.swipe_duration_coords.getText().toString()) || appSettings.swipe.duration
+                    };
+                }
+                break;
+
+            case 'launch_app':
+                if (!isFail) actionObj.appName = view.launch_app_name.getText().toString();
+                else actionObj.appName = view.onFail_launch_app_name.getText().toString();
+                break;
+
+            case 'execute_sequence': 
+                if (callableSequences.length > 0) {
+                    actionObj.sequenceName = callableSequences[view.onFailSequenceName.getSelectedItemPosition()].id;
+                }
+                break;
+        }
+
+        // 5. Success 动作的 Call Sequence Checkbox 特殊逻辑
+        if (!isFail && view.callSequenceCheckbox.isChecked()) {
+            if (callableSequences.length > 0) {
+                actionObj.sequenceName = callableSequences[view.sequenceName.getSelectedItemPosition()].id;
+            }
+        }
+
+        return actionObj;
+    }
+
+
+    // --- 保存 ---
     dialogs.build({
         customView: view,
         title: isNew ? "添加新触发器" : "编辑触发器",
         positive: "保存",
         negative: "取消"
     }).on("positive", () => {
+        
+        toast("保存中... (v8)");
+
+        let newTriggerData = {};
+
         const typeKeys = ['image', 'ocr', 'timer_end'];
-        currentTrigger.type = typeKeys[view.type.getSelectedItemPosition()];
-        currentTrigger.target = view.target.getText().toString();
-        currentTrigger.threshold = parseFloat(view.threshold.getText().toString()) || 0.8;
-        currentTrigger.cooldownMs = parseInt(view.cooldownMs.getText().toString()) || 0;
-        
-        const paddingText = view.cache_padding_input.getText().toString();
-        const parsedPadding = parseInt(paddingText);
-        const fallbackPadding = appSettings.defaultCachePadding || 50;
-        currentTrigger.cachePadding = !isNaN(parsedPadding) ? parsedPadding : fallbackPadding;
+        newTriggerData.type = typeKeys[view.type.getSelectedItemPosition()];
+        newTriggerData.target = view.target.getText().toString();
+        newTriggerData.threshold = parseFloat(view.threshold.getText().toString()) || 0.8;
+        newTriggerData.cooldownMs = parseInt(view.cooldownMs.getText().toString()) || 0;
+        newTriggerData.enabled = currentTrigger.enabled !== false;
 
-        // --- 核心修改 3C: 保存搜索区域 ---
-        if (currentTrigger.type !== 'timer_end') {
-            const x1_str = view.sa_x1.getText().toString();
-            const y1_str = view.sa_y1.getText().toString();
-            const x2_str = view.sa_x2.getText().toString();
-            const y2_str = view.sa_y2.getText().toString();
+        const pTxt = view.cache_padding_input.getText().toString();
+        newTriggerData.cachePadding = !isNaN(parseInt(pTxt)) ? parseInt(pTxt) : (appSettings.defaultCachePadding || 50);
 
-            // 检查是否 *全部* 为空。如果是，则删除
-            if (!x1_str && !y1_str && !x2_str && !y2_str) {
-                delete currentTrigger.search_area;
-            } else {
-                // 否则，全部解析
-                const x1 = parseInt(x1_str || "0");
-                const y1 = parseInt(y1_str || "0");
-                const x2 = parseInt(x2_str || String(device.width));
-                const y2 = parseInt(y2_str || String(device.height));
-                
-                // 自动排序
-                currentTrigger.search_area = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+        if (newTriggerData.type !== 'timer_end') {
+            const x1 = parseInt(view.sa_x1.getText().toString() || "0");
+            const y1 = parseInt(view.sa_y1.getText().toString() || "0");
+            const x2 = parseInt(view.sa_x2.getText().toString() || String(device.width));
+            const y2 = parseInt(view.sa_y2.getText().toString() || String(device.height));
+            const strSum = view.sa_x1.getText().toString() + view.sa_y1.getText().toString() + view.sa_x2.getText().toString() + view.sa_y2.getText().toString();
+            if (strSum.length > 0) {
+                 newTriggerData.search_area = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
             }
-        }
-        // --- 修改结束 ---
-
-        const selectedActionIndex = view.actionType.getSelectedItemPosition();
-        let newAction = {};
-        const actionTypes = ['click', 'back', 'skip', 'swipe', 'launch_app'];
-        newAction.type = actionTypes[selectedActionIndex];
-
-        newAction.delayMs = parseInt(view.actionDelayMs.getText().toString()) || 0;
-
-        if (newAction.type === 'click') {
-            newAction.offsetX = parseInt(view.click_offsetX.getText().toString()) || 0;
-            newAction.offsetY = parseInt(view.click_offsetY.getText().toString()) || 0;
-        
-        // --- 核心修改 1C: 保存滑动逻辑 ---
-        } else if (newAction.type === 'swipe') {
-            const swipeModeIndex = view.swipeMode.getSelectedItemPosition();
-            if (swipeModeIndex === 0) { // 向量
-                newAction.swipeVector = {
-                    dx: parseInt(view.swipe_dx.getText().toString()) || 0,
-                    dy: parseInt(view.swipe_dy.getText().toString()) || 0,
-                    duration: parseInt(view.swipe_duration_vector.getText().toString()) || appSettings.swipe.duration
-                };
-            } else { // 坐标
-                newAction.swipeCoords = {
-                    startX: parseInt(view.swipe_startX.getText().toString() || "1000"),
-                    startY: parseInt(view.swipe_startY.getText().toString() || "1000"),
-                    endX: parseInt(view.swipe_endX.getText().toString() || "1000"),
-                    endY: parseInt(view.swipe_endY.getText().toString() || "500"),
-                    duration: parseInt(view.swipe_duration_coords.getText().toString()) || appSettings.swipe.duration
-                };
-            }
-        // --- 修改结束 ---
-        
-        } else if (newAction.type === 'launch_app') {
-            newAction.appName = view.launch_app_name.getText().toString();
+            if (currentTrigger.cachedBounds) newTriggerData.cachedBounds = currentTrigger.cachedBounds;
         }
 
-        if (view.callSequenceCheckbox.isChecked()) {
-            if (callableSequences.length > 0) {
-                newAction.sequenceName = callableSequences[view.sequenceName.getSelectedItemPosition()].id;
-            } else {
-                toast("无法保存：没有可供选择的序列。");
-                return;
-            }
-        }
+        // 【关键】调用读取函数
+        newTriggerData.action = readActionFromUI(false); 
+        newTriggerData.onFail = readActionFromUI(true);  
 
-        currentTrigger.action = newAction;
+        const newOrder = parseInt(view.order.getText().toString());
+        if (isNaN(newOrder) || newOrder < 1) { toast("序号无效"); return; }
 
         if (isNew) {
             if (!sequence.triggers) sequence.triggers = [];
-            sequence.triggers.push(currentTrigger);
+            sequence.triggers.push(newTriggerData);
         } else {
-            if (!currentTrigger.hasOwnProperty('search_area')) {
-                delete trigger.search_area;
-            }
-            if (!currentTrigger.hasOwnProperty('cachedBounds')) {
-                delete trigger.cachedBounds;
-            }
-            Object.assign(trigger, currentTrigger);
-
-            const newOrderStr = view.order.getText().toString();
-            if (!validateNumericInput(newOrderStr)) return;
-            const newOrder = parseInt(newOrderStr);
-
-            if (newOrder < 1 || newOrder > triggers.length) {
-                toast(`序号不合法，请输入 1 到 ${triggers.length} 之间的数字。`);
-                return;
-            }
-
-            if (newOrder !== currentOrder) {
-                const triggerToMove = triggers.splice(currentOrder - 1, 1)[0];
-                triggers.splice(newOrder - 1, 0, triggerToMove);
-            }
+            triggers.splice(originalIndex, 1);
+            triggers.splice(newOrder - 1, 0, newTriggerData);
         }
 
         saveCurrentProfileThrottled();
         onBackCallback();
+
     }).on("negative", onBackCallback).show();
 }
-
 function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
     if (!task) return;
 
