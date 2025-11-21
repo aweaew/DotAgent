@@ -160,23 +160,29 @@ function reorderByPriority(sequence, triggers) {
             if (posMap[id] === undefined) posMap[id] = i;
         }
 
-        // Debug 输出 posMap（仅在调试模式打开时）
-        if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
-            try { logToScreen('[reorder] posMap=' + JSON.stringify(posMap)); } catch(e) {}
-        }
-
         return (triggers || [])
             .map((t, idx) => {
                 const id = getTriggerId(t);
                 const pos = (posMap[id] !== undefined) ? posMap[id] : (100000 + idx);
-                if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
-                    try { logToScreen(`[reorder] trigger=${(t.name||t.target||id)} id=${id} pos=${pos}`); } catch(e) {}
-                }
                 return { t, idx, pos };
             })
             .sort((a, b) => {
+                // --- 新增逻辑开始 ---
+                // 1. 检查“置顶优先”标志 (isTopPriority)
+                // 如果 a 是置顶，b 不是，a 排前 (-1)
+                // 如果 a 不是，b 是置顶，b 排前 (1)
+                const aTop = a.t.isTopPriority === true;
+                const bTop = b.t.isTopPriority === true;
+                if (aTop !== bTop) {
+                    return aTop ? -1 : 1;
+                }
+                // --- 新增逻辑结束 ---
+
+                // 2. 按照 PQ 动态位置排序
                 if (a.pos !== b.pos) return a.pos - b.pos;
-                return a.idx - b.idx; // 稳定排序：原始顺序
+                
+                // 3. 按照原始列表顺序排序
+                return a.idx - b.idx; 
             })
             .map(x => x.t);
     } catch (e) {
@@ -184,8 +190,6 @@ function reorderByPriority(sequence, triggers) {
         return triggers || [];
     }
 }
-
-
 // ==================== 触发器优先队列工具 /END ====================
 
 
@@ -195,7 +199,7 @@ function reorderByPriority(sequence, triggers) {
 // =================================================================================
 const CONSTANTS = {
     // [新增] 新增图片截图
-    VERSION: "5.2.2 去掉toast，添加触发器未触发动作",
+    VERSION: "5.2.5 更新超级优先级",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -385,6 +389,7 @@ ui.layout(
                                 <text text="界面定制" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" textStyle="bold" marginTop="20" />
                                 <horizontal gravity="center_vertical" marginTop="10"><text textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}">控制面板宽度:</text><input id="panelWidthInput" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" /></horizontal>
                                 <horizontal gravity="center_vertical" marginTop="10"><text textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}">目标视图大小:</text><input id="targetViewSizeInput" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" /></horizontal>
+                                <checkbox id="taskVisualsHiddenCheckbox" text="隐藏任务浮窗 (🎯, S, E)" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" marginTop="10" />
                                 <checkbox id="showCoordsCheckbox" text="悬浮窗显示坐标" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" marginTop="10" />
                                 <horizontal gravity="center_vertical" marginTop="10"><text textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}">目标视图颜色:</text><input id="targetColorInput" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" /></horizontal>
                                 <horizontal gravity="center_vertical" marginTop="10"><text textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}">点击任务颜色:</text><input id="clickTaskColorInput" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" /></horizontal>
@@ -814,6 +819,7 @@ ui.saveGraphicalSettingsBtn.click(() => {
         appSettings.theme.taskClickColor = clickTaskColor;
         appSettings.theme.taskSwipeColor = swipeTaskColor;
         appSettings.useGestureSwipe = ui.useGestureSwipeCheckbox.isChecked();
+        appSettings.taskVisualsHidden = ui.taskVisualsHiddenCheckbox.isChecked();
         saveCurrentProfileThrottled();
         if (appState.isFloatyCreated) {
             refreshAllUI();
@@ -1153,245 +1159,207 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 break;
             }
             case 'ocr': {
-                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: 识别文本 "${task.textToFind}"`);
-                let foundResult = null;
-                let timeout = task.timeout || 5000;
+                // 使用 var 避免重复声明
+                var taskNameLog = task.name ? taskName : `${taskName} ("${task.textToFind}")`;
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskNameLog}`);
+                
+                var foundResult = null;
+                var timeout = task.timeout || 5000;
 
+                // --- 1. 尝试缓存搜索 ---
                 if (task.cachedBounds && task.cachedBounds.left !== undefined) {
-                    logToScreen(`... 发现缓存位置，优先搜索区域: [${task.cachedBounds.left}, ${task.cachedBounds.top}, ${task.cachedBounds.right}, ${task.cachedBounds.bottom}]`);
-                    let captured = captureScreen();
+                    logToScreen(`... 尝试缓存搜索`);
+                    var captured = captureScreen();
                     if (captured) {
-                        let b = task.cachedBounds;
-                        
-                        let padding = (task.cachePadding !== undefined) ? task.cachePadding : (appSettings.defaultCachePadding || 50);
-                        let region = calculatePaddedRegion(b, padding);
-                        let ocrResults = ocr.paddle.detect(captured, { region: region, useSlim: true });
-                        
-                        let target = ocrResults.find(r => r.label.includes(task.textToFind));
+                        var b = task.cachedBounds;
+                        var padding = (task.cachePadding !== undefined) ? task.cachePadding : (appSettings.defaultCachePadding || 50);
+                        var region = calculatePaddedRegion(b, padding);
+                        var ocrResults = ocr.paddle.detect(captured, { region: region, useSlim: true });
+                        var target = ocrResults.find(r => r.label.includes(task.textToFind));
                         if (target) {
-                            logToScreen("... 缓存命中！在缓存位置找到文本。");
+                            logToScreen("... 缓存命中");
                             foundResult = target;
-                        } else {
-                            logToScreen("... 缓存未命中，目标已移动。将执行全屏扫描。");
                         }
                         captured.recycle();
                     }
                 }
 
+                // --- 2. 全屏/区域搜索 ---
                 if (!foundResult) {
-                    let startTime = new Date().getTime();
-
+                    var startTime = new Date().getTime();
                     while (new Date().getTime() - startTime < timeout) {
                         if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
+                        
+                        var captured = captureScreen();
+                        if (!captured) { sleep(1000); continue; }
 
-                        let captured = captureScreen();
-                        if (!captured) {
-                            logToScreen("截图失败，稍后重试...");
-                            sleep(1000);
-                            if (threads.currentThread().isInterrupted()) break;
-                            continue;
-                        }
-
-                        let ocrOptions = { useSlim: true };
+                        var ocrOptions = { useSlim: true };
                         if (task.search_area && task.search_area.length === 4) {
-                            // --- 核心修复：使用 calculatePaddedRegion 来限制 search_area ---
-                            let [x1, y1, x2, y2] = task.search_area;
-                            let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
-                            ocrOptions.region = calculatePaddedRegion(searchBounds, 0); // 0 padding
-                            // --- 修复结束 ---
+                            var [x1, y1, x2, y2] = task.search_area;
+                            var searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                            ocrOptions.region = calculatePaddedRegion(searchBounds, 0);
                         }
-                        let ocrResults = ocr.paddle.detect(captured, ocrOptions);
+                        var ocrResults = ocr.paddle.detect(captured, ocrOptions);
                         captured.recycle();
-                        let target = ocrResults.find(r => r.label.includes(task.textToFind));
-
+                        
+                        var target = ocrResults.find(r => r.label.includes(task.textToFind));
                         if (target) {
                             foundResult = target;
-                            logToScreen(`成功找到文本 "${task.textToFind}"`);
-
-                            let bounds = target.bounds;
-                            task.cachedBounds = {
-                                left: bounds.left,
-                                top: bounds.top,
-                                right: bounds.right,
-                                bottom: bounds.bottom
-                            };
-                            logToScreen(`... 新位置已缓存，正在保存方案...`);
+                            task.cachedBounds = { left: target.bounds.left, top: target.bounds.top, right: target.bounds.right, bottom: target.bounds.bottom };
                             saveCurrentProfileThrottled();
-
                             break;
                         }
                         sleep(300);
-                        if (threads.currentThread().isInterrupted()) break;
                     }
                 }
 
-                // ... (在 case 'ocr': 内部) ...
-
                 if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
 
+                // --- 3. 结果处理 ---
                 if (foundResult) {
-                    let successAction = task.onSuccess || { action: 'click' };
-                    var taskActionType = successAction.action; // <-- 已修改为 var
-                    
-                    if (taskActionType === 'terminate') {
-                        logToScreen(`任务 [${taskName}] 成功，终止序列执行。`);
-                        // 终止所有执行线程
-                        ui.run(() => stopExecution(`任务因 [${taskName}] 成功而终止`));
-                        break; // 退出 for 循环
-                    } else if (taskActionType === 'skip_loop') {
-                        logToScreen(`任务 [${taskName}] 成功，跳过本轮序列后续任务。`);
-                        break; // 退出 for 循环
-                    } else if (taskActionType === 'execute_sequence') {
+                    var successAction = task.onSuccess || { action: 'click', after: 'none' };
+                    var taskActionType = successAction.action; 
+
+                    // handleOcrSuccess 处理主动作
+                    handleOcrSuccess(foundResult, successAction);
+
+                    // 处理后续操作
+                    if (successAction.after === 'terminate') {
+                        logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 终止序列。`);
+                        ui.run(() => stopExecution(`任务 [${taskNameLog}] 触发终止`));
+                        break; 
+                    } else if (successAction.after === 'sequence') {
                         if (successAction.sequenceName) {
-                            const ocrSubSequenceOnSuccess = sequences[successAction.sequenceName];
-                            if (ocrSubSequenceOnSuccess) {
-                                executeSequence(ocrSubSequenceOnSuccess.tasks, `子序列 (${ocrSubSequenceOnSuccess.name || successAction.sequenceName})`, contextType, depth + 1);
+                            logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 调用子序列。`);
+                            // 【修复点】使用 var subSeq
+                            var subSeq = sequences[successAction.sequenceName];
+                            if (subSeq) {
+                                executeSequence(subSeq.tasks, `子序列 (${subSeq.name})`, contextType, depth + 1);
                             } else {
-                                logErrorToScreen(`错误: 找不到名为 "${successAction.sequenceName}" 的子序列`);
+                                logErrorToScreen(`错误: 找不到子序列 ${successAction.sequenceName}`);
                             }
                         }
-                    } else {
-                        handleOcrSuccess(foundResult, successAction);
                     }
+
                 } else {
                     logToScreen(`超时 ${timeout}ms 未找到文本 "${task.textToFind}"`);
                     handleGeneralFailAction(task.onFail, '识别失败', sourceName, contextType, depth);
                 }
                 break;
-                // ... (继续 case 'ocr': 之后的代码)
             }
             case 'image': {
-                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: 查找图片 "${task.imageFile}"`);
-                toast(`找图: "${task.imageFile}"`);
-                let foundImagePoint = null;
-                let imageTimeout = task.timeout || 5000;
-                let imagePath = files.join(CONSTANTS.FILES.IMAGE_DIR, task.imageFile);
+                // 使用 var
+                var taskNameLog = task.name ? taskName : `${taskName} ("${task.imageFile}")`;
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskNameLog}`);
+                
+                var foundImagePoint = null;
+                var imageTimeout = task.timeout || 5000;
+                var imagePath = files.join(CONSTANTS.FILES.IMAGE_DIR, task.imageFile);
 
                 if (!files.exists(imagePath)) {
-                    logErrorToScreen(`错误: 图片文件不存在 at ${imagePath}`);
-                    handleGeneralFailAction(task.onFail, '找图失败 (文件不存在)', sourceName, contextType, depth);
+                    logErrorToScreen(`图片不存在: ${task.imageFile}`);
+                    handleGeneralFailAction(task.onFail, '找图失败', sourceName, contextType, depth);
                     break;
                 }
-
-                let template = images.read(imagePath);
+                var template = images.read(imagePath);
                 if (!template) {
-                    logErrorToScreen(`错误: 无法读取图片文件 at ${imagePath}`);
-                    handleGeneralFailAction(task.onFail, '找图失败 (无法读取)', sourceName, contextType, depth);
+                    logErrorToScreen(`无法读取图片: ${task.imageFile}`);
+                    handleGeneralFailAction(task.onFail, '找图失败', sourceName, contextType, depth);
                     break;
                 }
 
+                // --- 1. 缓存搜索 ---
                 if (task.cachedBounds && task.cachedBounds.x !== undefined) {
-                    logToScreen(`... 发现缓存位置，优先搜索区域: ${JSON.stringify(task.cachedBounds)}`);
-                    let captured = captureScreen();
+                    logToScreen(`... 尝试缓存搜索`);
+                    var captured = captureScreen();
                     if (captured) {
-                        let b = task.cachedBounds;
-                        
-                        let padding = (task.cachePadding !== undefined) ? task.cachePadding : (appSettings.defaultCachePadding || 50);
-                        let region = calculatePaddedRegion(b, padding);
-                        logErrorToScreen("[calculatePaddedRegion] 返回regon: " + JSON.stringify(region));
-                        let p = images.findImage(captured, template, {
-                            region: region,
-                            threshold: task.threshold || 0.8
-                        });
-
+                        var b = task.cachedBounds;
+                        var padding = (task.cachePadding !== undefined) ? task.cachePadding : (appSettings.defaultCachePadding || 50);
+                        var region = calculatePaddedRegion(b, padding);
+                        var p = images.findImage(captured, template, { region: region, threshold: task.threshold || 0.8 });
                         if (p) {
-                            logToScreen("... 缓存命中！在缓存位置找到图片。");
+                            logToScreen("... 缓存命中");
                             foundImagePoint = p;
-                        } else {
-                            logToScreen("... 缓存未命中，目标已移动。将执行全屏扫描。");
                         }
                         captured.recycle();
                     }
                 }
 
+                // --- 2. 全屏/区域搜索 ---
                 if (!foundImagePoint) {
-                    let imageStartTime = new Date().getTime();
-
-                    while (new Date().getTime() - imageStartTime < imageTimeout) {
+                    var startTime = new Date().getTime();
+                    while (new Date().getTime() - startTime < imageTimeout) {
                         if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
+                        
+                        var captured = captureScreen();
+                        if (!captured) { sleep(1000); continue; }
 
-                        let captured = captureScreen();
-                        if (!captured) {
-                            logToScreen("截图失败，稍后重试...");
-                            sleep(1000);
-                            if (threads.currentThread().isInterrupted()) break;
-                            continue;
-                        }
-
-                        let findOptions = { threshold: task.threshold || 0.8 };
+                        var findOptions = { threshold: task.threshold || 0.8 };
                         if (task.search_area && task.search_area.length === 4) {
-                            // --- 核心修复：使用 calculatePaddedRegion 来限制 search_area ---
-                            let [x1, y1, x2, y2] = task.search_area;
-                            let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
-                            findOptions.region = calculatePaddedRegion(searchBounds, 0); // 0 padding
-                            logErrorToScreen("[calculatePaddedRegion] 返回regon2: " + JSON.stringify(findOptions.region));
-                            // --- 修复结束 ---
+                            var [x1, y1, x2, y2] = task.search_area;
+                            var searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                            findOptions.region = calculatePaddedRegion(searchBounds, 0);
                         }
-                        let p = images.findImage(captured, template, findOptions);
+                        var p = images.findImage(captured, template, findOptions);
                         captured.recycle();
 
                         if (p) {
                             foundImagePoint = p;
-                            logToScreen(`成功找到图片 "${task.imageFile}" at (${p.x}, ${p.y})`);
-
-                            task.cachedBounds = {
-                                x: p.x,
-                                y: p.y,
-                                width: template.getWidth(),
-                                height: template.getHeight()
-                            };
-                            logToScreen(`... 新位置已缓存，正在保存方案...`);
+                            task.cachedBounds = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
                             saveCurrentProfileThrottled();
-
                             break;
                         }
                         sleep(300);
-                        if (threads.currentThread().isInterrupted()) break;
                     }
                 }
-
-                // ... (在 case 'image': 内部) ...
 
                 if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) {
                     template.recycle();
                     break;
                 }
 
+                // --- 3. 结果处理 ---
                 if (foundImagePoint) {
-                    let location = {
-                        left: foundImagePoint.x, top: foundImagePoint.y, right: foundImagePoint.x + template.getWidth(), bottom: foundImagePoint.y + template.getHeight(),
+                    var location = {
+                        left: foundImagePoint.x, 
+                        top: foundImagePoint.y, 
+                        right: foundImagePoint.x + template.getWidth(), 
+                        bottom: foundImagePoint.y + template.getHeight(),
                         centerX: function () { return this.left + (this.right - this.left) / 2; },
                         centerY: function () { return this.top + (this.bottom - this.top) / 2; }
                     };
-                    let successAction = task.onSuccess || { action: 'click' };
-                    var taskActionType = successAction.action; // <-- 已修改为 var
-                    
-                    if (taskActionType === 'terminate') {
-                        logToScreen(`任务 [${taskName}] 成功，终止序列执行。`);
-                        ui.run(() => stopExecution(`任务因 [${taskName}] 成功而终止`));
-                        break; // 退出 for 循环
-                    } else if (taskActionType === 'skip_loop') {
-                        logToScreen(`任务 [${taskName}] 成功，跳过本轮序列后续任务。`);
-                        break; // 退出 for 循环
-                    } else if (taskActionType === 'execute_sequence') {
+
+                    var successAction = task.onSuccess || { action: 'click', after: 'none' };
+                    var taskActionType = successAction.action;
+
+                    // 处理主动作
+                    handleImageSuccess(location, successAction);
+
+                    // 处理后续操作
+                    if (successAction.after === 'terminate') {
+                        logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 终止序列。`);
+                        ui.run(() => stopExecution(`任务 [${taskNameLog}] 触发终止`));
+                        break; 
+                    } else if (successAction.after === 'sequence') {
                         if (successAction.sequenceName) {
-                            const imageSubSequenceOnSuccess = sequences[successAction.sequenceName];
-                            if (imageSubSequenceOnSuccess) {
-                                executeSequence(imageSubSequenceOnSuccess.tasks, `子序列 (${imageSubSequenceOnSuccess.name || successAction.sequenceName})`, contextType, depth + 1);
+                            logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 调用子序列。`);
+                            // 【修复点】使用 var subSeq
+                            var subSeq = sequences[successAction.sequenceName];
+                            if (subSeq) {
+                                executeSequence(subSeq.tasks, `子序列 (${subSeq.name})`, contextType, depth + 1);
                             } else {
-                                logErrorToScreen(`错误: 找不到名为 "${successAction.sequenceName}" 的子序列`);
+                                logErrorToScreen(`错误: 找不到子序列 ${successAction.sequenceName}`);
                             }
                         }
-                    } else {
-                        handleImageSuccess(location, successAction);
                     }
+
                 } else {
                     logToScreen(`超时 ${imageTimeout}ms 未找到图片 "${task.imageFile}"`);
                     handleGeneralFailAction(task.onFail, '找图失败', sourceName, contextType, depth);
                 }
+                
                 template.recycle();
                 break;
-                // ... (继续 case 'image': 之后的代码) ...
             }
             case 'wait_for_dissapear': {
                 logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${task.name || `等待'${task.target}'消失`}`);
@@ -1574,20 +1542,51 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 break;
             }
             case 'stop_monitor': {
-                logToScreen(`[${sourceName}] 动态停止监控: ${task.sequenceName}`);
+                logToScreen(`[${sourceName}] 正在停止监控: ${task.sequenceName}`);
+                
                 const monitorThreadId = appState.activeMonitors[task.sequenceName];
-                if (monitorThreadId && appState.threads[monitorThreadId] && appState.threads[monitorThreadId].isAlive()) {
-                    appState.threads[monitorThreadId].interrupt();
-                    delete appState.threads[monitorThreadId];
-                    delete appState.activeMonitors[task.sequenceName];
-                    logToScreen(`成功发送停止信号到监控 [${task.sequenceName}]。`);
+                
+                if (monitorThreadId) {
+                    // 【核心修复 1】先清理数据，再停止线程。防止线程提前终止导致状态残留。
                     
-                    // --- 修复 1: (UI同步) 停止后，手动更新 👁️ 按钮状态 ---
-                    updateMonitorStatusUI();
-                    // --- 修复 1 结束 ---
+                    // 1. 从活动列表中移除
+                    delete appState.activeMonitors[task.sequenceName];
+                    
+                    // 2. 检查并更新全局开关状态
+                    // 如果停止的是主监控，或者当前没有任何监控在运行了，必须把总开关 isMonitoring 关掉
+                    // 这样 updateMonitorStatusUI 才能正确识别状态
+                    if (task.sequenceName === appSettings.mainMonitorKey || Object.keys(appState.activeMonitors).length === 0) {
+                        appState.isMonitoring = false;
+                        appState.timers = {}; 
+                        logToScreen("所有监控已停止，重置全局状态。");
+                    }
+
+                    // 3. 强制 UI 刷新 (放在中断线程之前)
+                    ui.post(() => {
+                        updateMonitorStatusUI();
+                        // 双重保险：强制重置图标
+                        if (!appState.isMonitoring && Object.keys(appState.activeMonitors).length === 0) {
+                            if (uiRefs.controlPanel && uiRefs.controlPanel.monitorBtn) {
+                                uiRefs.controlPanel.monitorBtn.setText("👁️");
+                                uiRefs.controlPanel.monitorStatusIcon.setVisibility(8);
+                            }
+                        }
+                    });
+                    
+                    // 4. 最后再处理线程停止
+                    if (appState.threads[monitorThreadId]) {
+                        // 如果是停止自己(当前线程)，interrupt后脚本可能随时停止，所以这步放最后
+                        if (appState.threads[monitorThreadId].isAlive()) {
+                            logToScreen(`正在终止线程: ${monitorThreadId}`);
+                            appState.threads[monitorThreadId].interrupt();
+                        }
+                        delete appState.threads[monitorThreadId];
+                    }
+                    
+                    logToScreen(`已停止监控 [${task.sequenceName}]`);
                     
                 } else {
-                    logToScreen(`警告: 监控 [${task.sequenceName}] 未在运行或未找到。`);
+                    logToScreen(`警告: 监控 [${task.sequenceName}] 未在运行，无法停止。`);
                 }
                 break;
             }
@@ -1932,71 +1931,20 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 }
 
                 // 3) watcher 循环里：排序后打印 priorityQueue 与 ordered（放在每轮 reorder 之后）
-                const ordered = reorderByPriority(sequence, localTriggers);
+                // 【核心修复】直接使用 reorderByPriority 的结果。
+                // 它已经完美处理了 "🔥 置顶优先" 和 "PQ 动态排序" 的混合逻辑。
+                // 我们不再需要旧版的 mismatch/rebuild 逻辑，因为它会强制覆盖掉置顶效果。
+                
+                var ordered_final = reorderByPriority(sequence, localTriggers);
 
-                // ordered 已由 reorderByPriority 计算出来（注意可能是 const/let，确保下面使用的变量名不冲突）
+                // debug print (可选，保留用于调试)
                 try {
-                    // 1) 把 ordered 转为 id 列表（兼容 ES5）
-                    var orderedIds = [];
-                    for (var oi = 0; oi < ordered.length; oi++) {
-                        try {
-                            orderedIds.push(getTriggerId(ordered[oi]));
-                        } catch (e) { }
-                    }
                     if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
-                        try { logToScreen('[Debug] orderedIds(from reorder) = ' + JSON.stringify(orderedIds)); } catch (e) { }
-                        try { logToScreen('[Debug] sequence.priorityQueue = ' + JSON.stringify(sequence.priorityQueue || [])); } catch (e) { }
+                        // 打印前几个触发器的名字，看看置顶是否生效
+                        var debugNames = ordered_final.slice(0, 5).map(t => (t.isTopPriority ? "🔥" : "") + (t.name || t.target || "unnamed"));
+                        logToScreen(`[Watcher] Final Order: ${debugNames.join(', ')}`);
                     }
-
-                    // 2) 准备 pq 副本
-                    var pq = Array.isArray(sequence.priorityQueue) ? sequence.priorityQueue.slice() : [];
-
-                    // 3) 比较前几项是否 mismatch（检查前 3 项）
-                    var mismatch = false;
-                    for (var k = 0; k < Math.min(3, pq.length); k++) {
-                        if (orderedIds[k] !== pq[k]) { mismatch = true; break; }
-                    }
-
-                    // 4) 如果不匹配，则按 pq 的顺序重建 ordered_final
-                    var ordered_final = null;
-                    if (mismatch) {
-                        // id -> trigger 映射
-                        var idToTrigger = {};
-                        for (var i = 0; i < localTriggers.length; i++) {
-                            try { idToTrigger[getTriggerId(localTriggers[i])] = localTriggers[i]; } catch (e) { }
-                        }
-                        var rebuilt = [];
-                        // 先按 pq 填充
-                        for (var j = 0; j < pq.length; j++) {
-                            var id = pq[j];
-                            if (idToTrigger[id]) {
-                                rebuilt.push(idToTrigger[id]);
-                            }
-                        }
-                        // 把未被包含的 trigger 按原始顺序追加
-                        for (var z = 0; z < localTriggers.length; z++) {
-                            var t = localTriggers[z];
-                            var tid = null;
-                            try { tid = getTriggerId(t); } catch (e) { }
-                            // 如果 pq 中不包含则追加
-                            var foundInPq = false;
-                            for (var yy = 0; yy < pq.length; yy++) { if (pq[yy] === tid) { foundInPq = true; break; } }
-                            if (!foundInPq) rebuilt.push(t);
-                        }
-                        if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
-                            try { logToScreen('[Debug] Rebuilt ordered from PQ: ' + JSON.stringify((function (arr) { var o = []; for (var ii = 0; ii < arr.length; ii++) { try { o.push(getTriggerId(arr[ii])); } catch (e) { } } return o; })(rebuilt))); } catch (e) { }
-                        }
-                        ordered_final = rebuilt;
-                    } else {
-                        ordered_final = ordered.slice ? ordered.slice(0) : ordered; // 保证是数组拷贝
-                    }
-                } catch (e) {
-                    // 出错就回退到原始 ordered
-                    try { logErrorToScreen('[Debug reorder patch error] ' + e); } catch (_) { }
-                    var ordered_final = ordered;
-                }
-
-                // === 注意：后续请用 ordered_final 来代替 ordered 进行遍历与触发判断 ===
+                } catch (e) { }
 
                 // debug print
                 try {
@@ -2290,14 +2238,14 @@ function createRedDot() {
     uiRefs.redDot.setSize(30, -2);
 }
 function createControlPanel() {
+    // 1. 定义悬浮窗布局 (回归最稳健的单文本模式)
     uiRefs.controlPanel = floaty.rawWindow(
         <card id="mainLayout" bg="{{CONSTANTS.UI.THEME.PRIMARY_CARD}}" cardCornerRadius="12dp" cardElevation="8dp">
             <vertical>
                 
-                {/* --- 核心修改：将 "headerBar" 从 horizontal 改为 vertical --- */}
                 <vertical id="headerContainer" padding="4">
                     
-                    {/* --- 第 1 行: 图标, 名称, 坐标 --- */}
+                    {/* --- 第 1 行: 方案名称 --- */}
                     <horizontal gravity="center_vertical" w="*">
                         <horizontal layout_weight="1" gravity="left|center_vertical" marginLeft="4">
                             <text id="monitorStatusIcon" text="👁️" textSize="12sp" textColor="{{CONSTANTS.UI.THEME.ACTIVE_TAB_COLOR}}" visibility="gone" marginRight="4" />
@@ -2306,21 +2254,22 @@ function createControlPanel() {
                         <text id="positionText" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" singleLine="true" />
                     </horizontal>
                     
-                    {/* --- 第 2 行: 状态 (新!) 和 实时时间 (新!) --- */}
-                    <horizontal gravity="center_vertical" w="*">
-                        {/* 状态 (左侧) */}
-                        <text id="statusText" text="" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" singleLine="true" layout_weight="1" marginLeft="4"/>
-                        {/* 时间 (右侧) */}
-                        <text id="systemTimeText" text="--:--:--" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" singleLine="true" marginRight="4" />
+                    {/* --- 第 2 行: 状态 (轮播) 和 时间 --- */}
+                    <horizontal gravity="center_vertical" w="*" marginTop="2">
+                        
+                        {/* 状态文本：单行，末尾省略，占据剩余空间 */}
+                        <text id="statusText" text="准备就绪" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" 
+                              singleLine="true" ellipsize="end"
+                              layout_weight="1" w="0dp" marginLeft="4" />
+
+                        {/* 时间 */}
+                        <text id="systemTimeText" text="--:--:--" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" singleLine="true" marginRight="4" marginLeft="4"/>
                     </horizontal>
 
                 </vertical>
-                {/* --- 头部修改结束 --- */}
 
-                {/* --- 水平分割线 --- */}
                 <View w="*" h="1dp" bg="{{CONSTANTS.UI.THEME.SECONDARY_CARD}}" />
 
-                {/* --- 按钮容器: 保持紧凑 --- */}
                 <vertical id="buttonsContainer" padding="0 4 4 4">
                     <horizontal gravity="center">
                         <button id="executeBtn" text="▶️" layout_weight="1" style="Widget.AppCompat.Button.Borderless" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" textSize="20sp" minWidth="0" padding="0" />
@@ -2332,125 +2281,144 @@ function createControlPanel() {
                         <button id="manageBtn" text="⚙️" layout_weight="1" style="Widget.AppCompat.Button.Borderless" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" textSize="20sp" minWidth="0" padding="0" />
                     </horizontal>
                 </vertical>
+
             </vertical>
         </card>
     );
+
     uiRefs.controlPanel.setSize(appSettings.panelWidth, -2);
     uiRefs.controlPanel.setPosition(appSettings.controlPanelPos.x, appSettings.controlPanelPos.y);
+
     ui.post(() => {
         if (!uiRefs.controlPanel) return;
-        setupDraggable(
-            uiRefs.controlPanel,
-            (x, y) => { appSettings.controlPanelPos = { x, y }; saveCurrentProfileThrottled(); },
-            updatePositionDisplay,
-            null,
-            toggleControlButtonsVisibility,
-            uiRefs.controlPanel.headerContainer // <-- 核心修改: 拖动句柄改为新的 "headerContainer"
-        );
-        uiRefs.controlPanel.executeBtn.click(toggleSequenceExecution);
-        uiRefs.controlPanel.monitorBtn.click(toggleMonitoring);
-        uiRefs.controlPanel.addTaskBtn.click(showAddTaskToMainDialog);
-
-        // --- “单击/双击”逻辑 (保持不变) ---
-        let manageClickCount = 0;
-        let manageClickTimer = null;
-        const doubleClickDelay = 300; 
         
-        uiRefs.controlPanel.manageBtn.click(() => {
-            manageClickCount++; 
-            if (manageClickTimer) { clearTimeout(manageClickTimer); }
-            manageClickTimer = setTimeout(() => {
-                if (manageClickCount === 1) {
-                    logToScreen("正在打开主编辑器...");
-                    app.launch(context.getPackageName());
-                    setTimeout(() => {
-                        ui.run(() => {
-                            switchView(ui.sequenceEditorView);
-                            if (ui.sequenceEditorView.getChildCount() === 0) {
-                                logToScreen("初始化序列编辑器...");
-                                renderSequenceListEditor();
-                            }
-                        });
-                    }, 500); 
-                } else if (manageClickCount >= 2) {
-                    activity.moveTaskToBack(true);
-                    toast("主窗口已隐藏");
-                }
-                manageClickCount = 0;
-                manageClickTimer = null;
-            }, doubleClickDelay);
-        });
-        
-    }); // <-- ui.post() 在这里结束
+        // 拖动句柄安全绑定
+        let safeHandle = uiRefs.controlPanel.headerContainer;
+        if (!safeHandle) safeHandle = uiRefs.controlPanel.mainLayout; 
 
-    // --- 核心修改：重写“实时时钟”逻辑 ---
+        if (safeHandle) {
+            setupDraggable(
+                uiRefs.controlPanel,
+                (x, y) => { appSettings.controlPanelPos = { x, y }; saveCurrentProfileThrottled(); },
+                updatePositionDisplay,
+                null,
+                toggleControlButtonsVisibility,
+                safeHandle
+            );
+        }
+
+        if (uiRefs.controlPanel.executeBtn) uiRefs.controlPanel.executeBtn.click(toggleSequenceExecution);
+        if (uiRefs.controlPanel.monitorBtn) uiRefs.controlPanel.monitorBtn.click(toggleMonitoring);
+        if (uiRefs.controlPanel.addTaskBtn) uiRefs.controlPanel.addTaskBtn.click(showProfileManager);
+        
+        if (uiRefs.controlPanel.manageBtn) {
+            let manageClickCount = 0;
+            let manageClickTimer = null;
+            const doubleClickDelay = 300; 
+            
+            uiRefs.controlPanel.manageBtn.click(() => {
+                manageClickCount++; 
+                if (manageClickTimer) { clearTimeout(manageClickTimer); }
+                manageClickTimer = setTimeout(() => {
+                    if (manageClickCount === 1) {
+                        logToScreen("正在打开主编辑器...");
+                        app.launch(context.getPackageName());
+                        setTimeout(() => {
+                            ui.run(() => {
+                                switchView(ui.sequenceEditorView);
+                                if (ui.sequenceEditorView.getChildCount() === 0) {
+                                    logToScreen("初始化序列编辑器...");
+                                    renderSequenceListEditor();
+                                }
+                            });
+                        }, 500); 
+                    } else if (manageClickCount >= 2) {
+                        activity.moveTaskToBack(true);
+                        toast("主窗口已隐藏");
+                    }
+                    manageClickCount = 0;
+                    manageClickTimer = null;
+                }, doubleClickDelay);
+            });
+        }
+    });
+
+    // --- 核心逻辑：状态轮播定时器 ---
     
-    // 1. 先清除旧的时钟 (如果存在)
     if (appState.ui.systemTimeTimer) {
         clearInterval(appState.ui.systemTimeTimer);
     }
     
-    // 2. 启动新的“状态与时钟”
+    let tickCount = 0;
+
     appState.ui.systemTimeTimer = setInterval(() => {
-        // 确保悬浮窗和文本框仍然存在
         if (uiRefs.controlPanel && uiRefs.controlPanel.systemTimeText && uiRefs.controlPanel.statusText) {
+            
+            tickCount++;
+            
+            // 1. 时钟
             let now = new Date();
             let h = now.getHours();
             let m = String(now.getMinutes()).padStart(2, '0');
             let s = String(now.getSeconds()).padStart(2, '0');
-            let timeStr = `${h}:${m}:${s}`;
             
-            let statusStr = ""; // 默认状态为空
+            // 2. 状态文本逻辑
+            let statusStr = "";
 
-            // --- 1. 检查倒计时 (最高优先级) ---
+            // 优先级 1: 倒计时 (忙碌)
             if (appState.currentWaitTask && appState.currentWaitTask.remaining > 0) {
                 let remainingSeconds = Math.round(appState.currentWaitTask.remaining / 1000);
-                statusStr = `⏳ ${remainingSeconds}s`; // "⏳ 29s"
+                statusStr = `⏳ 等待: ${remainingSeconds}s`;
             } 
-            // --- 2. 检查主序列 (第二优先级) ---
+            // 优先级 2: 序列运行中 (忙碌)
             else if (appState.isExecuting && appSettings.mainSequenceKey) {
-                let name = (sequences[appSettings.mainSequenceKey] || {}).name || '...';
-                statusStr = `▶️ ${name}`; // "▶️ 刷金币"
+                let name = (sequences[appSettings.mainSequenceKey] || {}).name || appSettings.mainSequenceKey || '序列运行中';
+                statusStr = `▶️ ${name}`;
             } 
-            
-            // --- 3. 【V2 修复】检查监控 (第三优先级) ---
+            // 优先级 3: 监控运行中 (忙碌 - 只有监控在跑)
             else if (appState.isMonitoring || Object.keys(appState.activeMonitors).length > 0) {
-                let key = null;
-                
-                if (appState.isMonitoring) {
-                    // 如果是主监控(👁️)启动的，优先使用 mainMonitorKey
-                    key = appSettings.mainMonitorKey;
-                } else {
-                    // 否则，它一定是动态监控(start_monitor)启动的
-                    key = Object.keys(appState.activeMonitors)[0];
-                }
-                
-                // 备用逻辑：如果 key 仍然无效 (例如主监控启动但未设置key)，则取第一个
-                if (!key && Object.keys(appState.activeMonitors).length > 0) {
-                     key = Object.keys(appState.activeMonitors)[0];
-                }
-
-                let name = key ? ((sequences[key] || {}).name || '...') : '监控中';
+                let key = appSettings.mainMonitorKey;
+                if (!appState.isMonitoring) { key = Object.keys(appState.activeMonitors)[0] || key; }
+                let name = key ? ((sequences[key] || {}).name || key) : '监控中';
                 statusStr = `👁️ ${name}`;
             }
-            // --- 修复结束 ---
+            // 优先级 4: 空闲 (轮播显示)
+            else { 
+                const mainSeqKey = appSettings.mainSequenceKey;
+                const mainMonKey = appSettings.mainMonitorKey;
+                let seqName = (mainSeqKey && sequences[mainSeqKey]) ? (sequences[mainSeqKey].name || mainSeqKey) : '无';
+                let monName = (mainMonKey && sequences[mainMonKey]) ? (sequences[mainMonKey].name || mainMonKey) : '无';
+                
+                // 轮播逻辑：6秒一个周期
+                // 0, 1, 2秒 -> 显示主序列
+                // 3, 4, 5秒 -> 显示主监控
+                if ((tickCount % 6) < 3) {
+                    statusStr = `⭐ ${seqName}`;
+                } else {
+                    statusStr = `🧿 ${monName}`;
+                }
+            }
 
-            // --- 4. 在UI线程中更新 *两个* 文本框 ---
+            // 3. 更新 UI
             ui.run(() => {
-                if (uiRefs.controlPanel && uiRefs.controlPanel.systemTimeText && uiRefs.controlPanel.statusText) {
+                if (!uiRefs.controlPanel) return;
+                
+                if (uiRefs.controlPanel.systemTimeText) {
+                    uiRefs.controlPanel.systemTimeText.setText(`${h}:${m}:${s}`);
+                }
+                
+                if (uiRefs.controlPanel.statusText) {
                     uiRefs.controlPanel.statusText.setText(statusStr);
-                    uiRefs.controlPanel.systemTimeText.setText(timeStr);
                 }
             });
+
         } else {
-            // 如果悬浮窗被销毁了，自动停止这个定时器
             if (appState.ui.systemTimeTimer) {
                 clearInterval(appState.ui.systemTimeTimer);
                 appState.ui.systemTimeTimer = null;
             }
         }
-    }, 1000); // 1秒钟刷新一次
-    // --- 时钟代码结束 ---
+    }, 1000); // 1秒刷新一次
 
     applyButtonVisibility();
 }
@@ -3885,7 +3853,11 @@ function populateTriggerList(container, sequence, sequenceKey, filterText) {
             }
 
             let info = `${index + 1}. [${trigger.type}] 目标: ${trigger.target}\n动作: ${actionInfo}`;
-
+            // --- 修改开始：添加置顶图标 ---
+            if (trigger.isTopPriority) {
+                info = `🔥 ${info}`; // 加个火苗图标表示置顶
+            }
+            // --- 修改结束 ---
             triggerView.enabledCheckbox.setChecked(trigger.enabled !== false); // 默认启用
             if (trigger.enabled === false) {
                 info += "\n(已禁用)";
@@ -4118,17 +4090,13 @@ function renderTriggerManager(sequence, sequenceKey) {
     });
 }
 
-/**
- * (V8 - 最终修正版：修复了 onFail 字段名不匹配导致的保存失效问题)
- * 显示触发器编辑器弹窗 (Level 4)
- */
 function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     const isNew = !trigger;
     const triggers = sequence.triggers || [];
     
     // 1. 准备数据副本
     const currentTrigger = isNew ?
-        { type: 'image', target: 'new_image.png', threshold: 0.8, action: { type: 'click', delayMs: 0 }, cooldownMs: 0, cachePadding: (appSettings.defaultCachePadding || 50), onFail: { action: 'skip' }, enabled: true } : 
+        { type: 'image', target: 'new_image.png', threshold: 0.8, action: { type: 'click', delayMs: 0 }, cooldownMs: 0, cachePadding: (appSettings.defaultCachePadding || 50), onFail: { action: 'skip' }, enabled: true, isTopPriority: false } : 
         JSON.parse(JSON.stringify(trigger));
 
     // 确保对象结构完整
@@ -4138,24 +4106,21 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     const originalIndex = isNew ? -1 : triggers.indexOf(trigger);
     const currentOrder = isNew ? triggers.length + 1 : originalIndex + 1;
 
-    if (!isNew && currentOrder === 0) {
-        toast("错误：无法定位原始触发器");
-        return; 
-    }
-
     const callableSequences = Object.entries(sequences)
         .filter(([key, seq]) => key !== sequenceKey)
         .map(([key, seq]) => ({ id: key, name: seq.name || key }));
-    const callableSequenceNames = callableSequences.length > 0 ? callableSequences.map(s => s.name) : ["无可用序列"];
-    const sequenceEntries = callableSequenceNames.map(name => name.replace(/\|/g, ' ')).join('|');
+    const sequenceEntries = callableSequences.length > 0 ? callableSequences.map(s => s.name).join('|').replace(/\|/g, '|') : "无可用序列"; // 简单修复 join
 
     // --- XML 界面 ---
     const viewXML = `
         <vertical padding="16">
             <horizontal id="order_row" gravity="center_vertical">
-                <text>触发器序号 (1-${triggers.length}):</text>
-                <input id="order" inputType="number" text="${currentOrder.toString()}"/>
+                <text>触发器序号:</text>
+                <input id="order" inputType="number" text="${currentOrder.toString()}" w="50dp"/>
+                <View w="10dp" />
+                <checkbox id="isTopPriority" text="🔥 置顶优先 (忽略PQ排序)" textColor="#FF5722" textStyle="bold"/>
             </horizontal>
+
             <text>触发类型:</text>
             <spinner id="type" entries="图像|文本(OCR)|计时器结束" />
             <text id="target_label">目标:</text>
@@ -4215,7 +4180,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
             <vertical id="launch_app_fields" visibility="gone"><text>App名称:</text><input id="launch_app_name" /></vertical>
             <horizontal marginTop="5" gravity="center_vertical">
                 <checkbox id="callSequenceCheckbox" text="然后调用序列"/>
-                <spinner id="sequenceName" entries="${sequenceEntries}" visibility="gone"/>
+                <spinner id="sequenceName" entries="${sequenceEntries.replace(/\|/g, '|')}" visibility="gone"/>
             </horizontal>
 
             <text text="未找到时动作 (onFail)" marginTop="15" textStyle="bold" textColor="#FF5252"/>
@@ -4223,7 +4188,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
             <text>延迟 (ms):</text><input id="onFailActionDelayMs" inputType="number" />
             <vertical id="onFail_launch_app_fields" visibility="gone"><text>App名称:</text><input id="onFail_launch_app_name" /></vertical>
             <horizontal id="onFail_callSequence_fields" marginTop="5" gravity="center_vertical" visibility="gone">
-                <text>调用序列:</text><spinner id="onFailSequenceName" entries="${sequenceEntries}" />
+                <text>调用序列:</text><spinner id="onFailSequenceName" entries="${sequenceEntries.replace(/\|/g, '|')}" />
             </horizontal>
 
         </vertical>
@@ -4231,7 +4196,10 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     const view = ui.inflate(viewXML, null, false);
 
     // --- UI 初始化 ---
-    if (isNew) view.order_row.setVisibility(8); 
+    // 1. 设置置顶 Checkbox
+    view.isTopPriority.setChecked(currentTrigger.isTopPriority === true);
+
+    if (isNew) view.order_row.setVisibility(0); // 显示序号行
 
     const typeMap = { 'image': 0, 'ocr': 1, 'timer_end': 2 };
     view.type.setSelection(typeMap[currentTrigger.type] || 0);
@@ -4279,7 +4247,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
         }
     }
 
-    // --- 动作 UI 填充 logic (Success) ---
+    // --- 动作 UI 填充 (Success) ---
     const actionMap = { 'click': 0, 'back': 1, 'skip': 2, 'swipe': 3, 'launch_app': 4 };
     view.actionType.setSelection(actionMap[currentTrigger.action.type] || 0);
     view.actionDelayMs.setText(String(currentTrigger.action.delayMs || 0));
@@ -4322,9 +4290,9 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     }
     view.callSequenceCheckbox.setOnCheckedChangeListener((c, isChecked) => { view.sequenceName.setVisibility(isChecked ? 0 : 8); });
 
-    // --- 动作 UI 填充 logic (Fail) ---
+    // --- 动作 UI 填充 (Fail) ---
     const onFailMap = { 'skip': 0, 'back': 1, 'launch_app': 2, 'execute_sequence': 3 };
-    view.onFailActionType.setSelection(onFailMap[currentTrigger.onFail.action] || 0); // onFail uses .action
+    view.onFailActionType.setSelection(onFailMap[currentTrigger.onFail.action] || 0);
     view.onFailActionDelayMs.setText(String(currentTrigger.onFail.delayMs || 0));
 
     function updateOnFailFields(pos) {
@@ -4340,24 +4308,18 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     updateOnFailFields(onFailMap[currentTrigger.onFail.action] || 0);
     view.onFailActionType.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => updateOnFailFields(pos) });
 
-
-    // ============================================================
-    // 【统一的读取逻辑 (Helper Function - V8 修正版)】
-    // ============================================================
+    // Helper to read actions
     function readActionFromUI(isFail) {
         let typeIndex, delayStr;
-        
-        if (!isFail) { // Success Action
+        if (!isFail) { 
              typeIndex = view.actionType.getSelectedItemPosition();
              delayStr = view.actionDelayMs.getText().toString();
-        } else { // Fail Action
+        } else { 
              typeIndex = view.onFailActionType.getSelectedItemPosition();
              delayStr = view.onFailActionDelayMs.getText().toString();
         }
 
-        // 声明在外部，避免块级作用域错误
         let currentTypeStr = "";
-        
         if (!isFail) {
             let sTypes = ['click', 'back', 'skip', 'swipe', 'launch_app'];
             currentTypeStr = sTypes[typeIndex];
@@ -4367,14 +4329,8 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
         }
 
         let actionObj = {};
-        // 【V8 核心修复】：
-        // Success 动作使用 .type (历史遗留)
-        // Fail 动作使用 .action (为了与 Task 保持一致)
-        if (isFail) {
-            actionObj.action = currentTypeStr;
-        } else {
-            actionObj.type = currentTypeStr;
-        }
+        if (isFail) actionObj.action = currentTypeStr;
+        else actionObj.type = currentTypeStr;
         
         actionObj.delayMs = parseInt(delayStr) || 0;
 
@@ -4383,16 +4339,15 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
                 actionObj.offsetX = parseInt(view.click_offsetX.getText().toString()) || 0;
                 actionObj.offsetY = parseInt(view.click_offsetY.getText().toString()) || 0;
                 break;
-                
             case 'swipe':
                 const isCoords = view.swipeMode.getSelectedItemPosition() === 1;
-                if (!isCoords) { // Vector
+                if (!isCoords) { 
                     actionObj.swipeVector = {
                         dx: parseInt(view.swipe_dx.getText().toString()) || 0,
                         dy: parseInt(view.swipe_dy.getText().toString()) || 0,
                         duration: parseInt(view.swipe_duration_vector.getText().toString()) || appSettings.swipe.duration
                     };
-                } else { // Coords
+                } else { 
                     actionObj.swipeCoords = {
                         startX: parseInt(view.swipe_startX.getText().toString() || "1000"),
                         startY: parseInt(view.swipe_startY.getText().toString() || "1000"),
@@ -4402,12 +4357,10 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
                     };
                 }
                 break;
-
             case 'launch_app':
                 if (!isFail) actionObj.appName = view.launch_app_name.getText().toString();
                 else actionObj.appName = view.onFail_launch_app_name.getText().toString();
                 break;
-
             case 'execute_sequence': 
                 if (callableSequences.length > 0) {
                     actionObj.sequenceName = callableSequences[view.onFailSequenceName.getSelectedItemPosition()].id;
@@ -4415,16 +4368,13 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
                 break;
         }
 
-        // 5. Success 动作的 Call Sequence Checkbox 特殊逻辑
         if (!isFail && view.callSequenceCheckbox.isChecked()) {
             if (callableSequences.length > 0) {
                 actionObj.sequenceName = callableSequences[view.sequenceName.getSelectedItemPosition()].id;
             }
         }
-
         return actionObj;
     }
-
 
     // --- 保存 ---
     dialogs.build({
@@ -4434,8 +4384,6 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
         negative: "取消"
     }).on("positive", () => {
         
-        toast("保存中... (v8)");
-
         let newTriggerData = {};
 
         const typeKeys = ['image', 'ocr', 'timer_end'];
@@ -4444,6 +4392,10 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
         newTriggerData.threshold = parseFloat(view.threshold.getText().toString()) || 0.8;
         newTriggerData.cooldownMs = parseInt(view.cooldownMs.getText().toString()) || 0;
         newTriggerData.enabled = currentTrigger.enabled !== false;
+        
+        // --- 保存置顶优先 ---
+        newTriggerData.isTopPriority = view.isTopPriority.isChecked();
+        // --- 保存结束 ---
 
         const pTxt = view.cache_padding_input.getText().toString();
         newTriggerData.cachePadding = !isNaN(parseInt(pTxt)) ? parseInt(pTxt) : (appSettings.defaultCachePadding || 50);
@@ -4460,7 +4412,6 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
             if (currentTrigger.cachedBounds) newTriggerData.cachedBounds = currentTrigger.cachedBounds;
         }
 
-        // 【关键】调用读取函数
         newTriggerData.action = readActionFromUI(false); 
         newTriggerData.onFail = readActionFromUI(true);  
 
@@ -4480,38 +4431,45 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
 
     }).on("negative", onBackCallback).show();
 }
+/**
+ * (V4 - 兼容性修复版：解决 idx 重复声明问题)
+ * 显示任务编辑器弹窗
+ */
 function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
     if (!task) return;
 
-    // --- 核心修改 1A: 重新获取 currentOrder ---
+    // 获取当前任务序号
     const currentOrder = taskList.indexOf(task) + 1;
 
+    // 准备可调用的序列列表 (排除当前序列)
     const onDemandSequences = Object.entries(sequences)
         .filter(([key, seq]) => key !== sequenceKey)
         .map(([key, seq]) => ({ id: key, name: seq.name || key }));
     const onDemandSequenceNames = onDemandSequences.length > 0 ? onDemandSequences.map(s => s.name) : ["无可用序列"];
     const onDemandEntries = onDemandSequenceNames.map(name => name.replace(/\|/g, ' ')).join('|');
 
+    // 准备监控序列列表
     const monitorSequences = Object.entries(sequences)
         .filter(([key, seq]) => seq.executionPolicy && seq.executionPolicy.mode === 'monitor')
         .map(([key, seq]) => ({ id: key, name: seq.name || key }));
     const monitorSequenceNames = monitorSequences.length > 0 ? monitorSequences.map(s => s.name) : ["无可用监控"];
     const monitorEntries = monitorSequenceNames.map(name => name.replace(/\|/g, ' ')).join('|');
 
+    // XML 布局定义
     const viewXML = `
         <vertical padding="16">
-            {/* --- 核心修改 1B: 重新添加 "order_row" --- */}
             <horizontal id="order_row" gravity="center_vertical">
                 <text>任务序号 (1-${taskList.length}):</text>
                 <input id="order" inputType="number" text="${currentOrder.toString()}"/>
             </horizontal>
             
             <text>任务名称:</text><input id="name" />
-            
             <checkbox id="taskEnabled" text="启用此任务" textColor="#E0E0E0" />
             <text>执行前延迟 (ms):</text><input id="delayMs" inputType="number" />
             
-            <vertical id="wait_fields" visibility="gone"><text>等待时间 (ms):</text><input id="wait_duration" inputType="number" /></vertical>
+            <vertical id="wait_fields" visibility="gone">
+                <text>等待时间 (ms):</text><input id="wait_duration" inputType="number" />
+            </vertical>
             
             <vertical id="timer_fields" visibility="gone">
                 <text>计时器名称:</text><input id="timer_name" />
@@ -4519,26 +4477,40 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             </vertical>
 
             <vertical id="click_fields" visibility="gone">
-                <horizontal><text>X:</text><input id="click_x" inputType="numberDecimal" /><text>Y:</text><input id="click_y" inputType="numberDecimal" /></horizontal>
-                <horizontal><text>OffsetX:</text><input id="click_offsetX" inputType="numberSigned" /><text>OffsetY:</text><input id="click_offsetY" inputType="numberSigned" /></horizontal>
+                <horizontal><text>X:</text><input id="click_x" inputType="numberDecimal" layout_weight="1"/><text>Y:</text><input id="click_y" inputType="numberDecimal" layout_weight="1"/></horizontal>
+                <horizontal><text>OffsetX:</text><input id="click_offsetX" inputType="numberSigned" layout_weight="1"/><text>OffsetY:</text><input id="click_offsetY" inputType="numberSigned" layout_weight="1"/></horizontal>
             </vertical>
             
             <vertical id="swipe_fields" visibility="gone">
-                <horizontal><text>开始X:</text><input id="swipe_startX" inputType="numberDecimal" /><text>开始Y:</text><input id="swipe_startY" inputType="numberDecimal" /></horizontal>
-                <horizontal><text>结束X:</text><input id="swipe_endX" inputType="numberDecimal" /><text>结束Y:</text><input id="swipe_endY" inputType="numberDecimal" /></horizontal>
+                <horizontal><text>开始X:</text><input id="swipe_startX" inputType="numberDecimal" layout_weight="1"/><text>开始Y:</text><input id="swipe_startY" inputType="numberDecimal" layout_weight="1"/></horizontal>
+                <horizontal><text>结束X:</text><input id="swipe_endX" inputType="numberDecimal" layout_weight="1"/><text>结束Y:</text><input id="swipe_endY" inputType="numberDecimal" layout_weight="1"/></horizontal>
                 <text>滑动时长 (ms):</text><input id="swipe_duration" inputType="number" />
             </vertical>
             
             <vertical id="ocr_fields" visibility="gone">
                 <text>要查找的文本:</text><input id="ocr_textToFind" />
                 <text>超时时间 (ms):</text><input id="ocr_timeout" inputType="number" />
-                <text>成功后操作:</text><spinner id="ocr_onSuccessAction" entries="点击找到的文本|执行返回|调用序列|终止序列|跳过循环" />
-                <horizontal id="ocr_click_offset_fields"><text>点击OffsetX:</text><input id="ocr_offsetX" inputType="numberSigned" /><text>点击OffsetY:</text><input id="ocr_offsetY" inputType="numberSigned" /></horizontal>
+                
+                <text text="成功后操作 (主动作):" marginTop="10" textStyle="bold"/>
+                <spinner id="ocr_onSuccessAction" entries="点击找到的文本|执行返回|跳过(无操作)" />
+                
+                <horizontal id="ocr_click_offset_fields">
+                    <text>点击偏移:</text>
+                    <input id="ocr_offsetX" hint="X" inputType="numberSigned" w="60dp"/><input id="ocr_offsetY" hint="Y" inputType="numberSigned" w="60dp"/>
+                </horizontal>
+
+                <horizontal marginTop="5" gravity="center_vertical">
+                    <text>后续操作:</text>
+                    <spinner id="ocr_afterAction" entries="无|调用序列|终止序列" marginLeft="5" layout_weight="1"/>
+                </horizontal>
                 <spinner id="ocr_onSuccessSequence" entries="${onDemandEntries}" visibility="gone"/>
-                <text>失败后操作:</text><spinner id="ocr_onFailAction" entries="停止任务|跳过|调用序列" />
+
+                <text text="失败后操作:" marginTop="10" textStyle="bold"/>
+                <spinner id="ocr_onFailAction" entries="停止任务|跳过|调用序列" />
                 <spinner id="ocr_onFailSequence" entries="${onDemandEntries}" visibility="gone"/>
+                
                 <vertical id="ocr_cache_info" marginTop="10" visibility="gone">
-                    <text>缓存的位置数据:</text>
+                    <text textSize="12sp">缓存的位置数据:</text>
                     <horizontal>
                         <input id="ocr_cached_bounds_display" enabled="false" layout_weight="1" textSize="10sp"/>
                         <button id="ocr_copy_cache_btn" text="写入搜索区" style="Widget.AppCompat.Button.Borderless.Colored" />
@@ -4555,13 +4527,27 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 </horizontal>
                 <text>相似度 (0.1-1.0):</text><input id="image_threshold" inputType="numberDecimal" />
                 <text>超时时间 (ms):</text><input id="image_timeout" inputType="number" />
-                <text>成功后操作:</text><spinner id="image_onSuccessAction" entries="点击找到的图片|执行返回|调用序列|终止序列|跳过循环" />
-                <horizontal id="image_click_offset_fields"><text>点击OffsetX:</text><input id="image_offsetX" inputType="numberSigned" /><text>点击OffsetY:</text><input id="image_offsetY" inputType="numberSigned" /></horizontal>
+                
+                <text text="成功后操作 (主动作):" marginTop="10" textStyle="bold"/>
+                <spinner id="image_onSuccessAction" entries="点击找到的图片|执行返回|跳过(无操作)" />
+                
+                <horizontal id="image_click_offset_fields">
+                    <text>点击偏移:</text>
+                    <input id="image_offsetX" hint="X" inputType="numberSigned" w="60dp"/><input id="image_offsetY" hint="Y" inputType="numberSigned" w="60dp"/>
+                </horizontal>
+
+                <horizontal marginTop="5" gravity="center_vertical">
+                    <text>后续操作:</text>
+                    <spinner id="image_afterAction" entries="无|调用序列|终止序列" marginLeft="5" layout_weight="1"/>
+                </horizontal>
                 <spinner id="image_onSuccessSequence" entries="${onDemandEntries}" visibility="gone"/>
-                <text>失败后操作:</text><spinner id="image_onFailAction" entries="停止任务|跳过|调用序列" />
+
+                <text text="失败后操作:" marginTop="10" textStyle="bold"/>
+                <spinner id="image_onFailAction" entries="停止任务|跳过|调用序列" />
                 <spinner id="image_onFailSequence" entries="${onDemandEntries}" visibility="gone"/>
+                
                 <vertical id="image_cache_info" marginTop="10" visibility="gone">
-                    <text>缓存的位置数据:</text>
+                    <text textSize="12sp">缓存的位置数据:</text>
                     <horizontal>
                         <input id="image_cached_bounds_display" enabled="false" layout_weight="1" textSize="10sp"/>
                         <button id="image_copy_cache_btn" text="写入搜索区" style="Widget.AppCompat.Button.Borderless.Colored" />
@@ -4571,74 +4557,53 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             </vertical>
 
             <vertical id="wait_for_dissapear_fields" visibility="gone">
-                <text>目标类型:</text>
-                <spinner id="wfd_targetType" entries="图片|文本(OCR)" />
-                <text>目标 (图片文件名或文本内容):</text>
-                <input id="wfd_target" />
+                <text>目标类型:</text><spinner id="wfd_targetType" entries="图片|文本(OCR)" />
+                <text>目标 (文件名/文本):</text><input id="wfd_target" />
                 <horizontal>
-                    <text>查找超时(ms):</text><input id="wfd_findTimeout" inputType="number" layout_weight="1"/>
-                    <text>消失超时(ms):</text><input id="wfd_disappearTimeout" inputType="number" layout_weight="1"/>
+                    <text>查找超时:</text><input id="wfd_findTimeout" inputType="number" layout_weight="1"/>
+                    <text>消失超时:</text><input id="wfd_disappearTimeout" inputType="number" layout_weight="1"/>
                 </horizontal>
                 <vertical id="wfd_image_options">
-                    <text>相似度 (0.1-1.0):</text>
-                    <input id="wfd_threshold" inputType="numberDecimal" />
+                    <text>相似度:</text><input id="wfd_threshold" inputType="numberDecimal" />
                 </vertical>
-                <text>成功后操作 (消失后):</text>
-                <spinner id="wfd_onSuccessAction" entries="跳过(无操作)|执行返回|调用序列" />
+                <text>成功后(已消失):</text><spinner id="wfd_onSuccessAction" entries="跳过(无操作)|执行返回|调用序列" />
                 <spinner id="wfd_onSuccessSequence" entries="${onDemandEntries}" visibility="gone"/>
-                <text>失败后操作 (未找到):</text>
-                <spinner id="wfd_onFailAction" entries="停止任务|跳过|调用序列" />
+                <text>失败后(未找到):</text><spinner id="wfd_onFailAction" entries="停止任务|跳过|调用序列" />
                 <spinner id="wfd_onFailSequence" entries="${onDemandEntries}" visibility="gone"/>
-                <text>超时后操作 (未消失):</text>
-                <spinner id="wfd_onTimeoutAction" entries="停止任务|跳过|调用序列" />
+                <text>超时后(未消失):</text><spinner id="wfd_onTimeoutAction" entries="停止任务|跳过|调用序列" />
                 <spinner id="wfd_onTimeoutSequence" entries="${onDemandEntries}" visibility="gone"/>
             </vertical>
             
             <vertical id="search_area_fields" visibility="gone">
-                 <text>搜索区域 (默认全屏 0,0,${device.width},${device.height}):</text>
+                 <text>搜索区域 (X1,Y1,X2,Y2):</text>
                  <horizontal>
-                    <input id="sa_x1" hint="X1" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
-                    <input id="sa_y1" hint="Y1" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
-                    <input id="sa_x2" hint="X2" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
-                    <input id="sa_y2" hint="Y2" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
+                    <input id="sa_x1" hint="X1" inputType="number" layout_weight="1" textSize="14sp"/>
+                    <input id="sa_y1" hint="Y1" inputType="number" layout_weight="1" textSize="14sp"/>
+                    <input id="sa_x2" hint="X2" inputType="number" layout_weight="1" textSize="14sp"/>
+                    <input id="sa_y2" hint="Y2" inputType="number" layout_weight="1" textSize="14sp"/>
                 </horizontal>
             </vertical>
 
             <vertical id="cache_padding_fields" visibility="gone">
-                 <text>缓存搜索区扩边 (Padding) - 可选:</text>
-                 <input id="cache_padding_input" hint="例如: 50 (像素)" inputType="number" />
+                 <text>缓存扩边 (Padding):</text><input id="cache_padding_input" inputType="number" />
             </vertical>
             
-            <vertical id="launch_app_fields" visibility="gone">
-                <text>要启动的应用名称:</text><input id="launch_app_name" />
-            </vertical>
-            
-            <vertical id="execute_sequence_fields" visibility="gone">
-                <text>要调用的序列:</text>
-                <spinner id="execute_sequence_name" entries="${onDemandEntries}" />
-            </vertical>
-            
-            <vertical id="start_monitor_fields" visibility="gone">
-                <text>要启动的监控序列:</text>
-                <spinner id="start_monitor_name" entries="${monitorEntries}" />
-            </vertical>
-            
-            <vertical id="stop_monitor_fields" visibility="gone">
-                <text>要停止的监控序列:</text>
-                <spinner id="stop_monitor_name" entries="${monitorEntries}" />
-            </vertical>
+            <vertical id="launch_app_fields" visibility="gone"><text>App名称:</text><input id="launch_app_name" /></vertical>
+            <vertical id="execute_sequence_fields" visibility="gone"><text>调用序列:</text><spinner id="execute_sequence_name" entries="${onDemandEntries}" /></vertical>
+            <vertical id="start_monitor_fields" visibility="gone"><text>启动监控:</text><spinner id="start_monitor_name" entries="${monitorEntries}" /></vertical>
+            <vertical id="stop_monitor_fields" visibility="gone"><text>停止监控:</text><spinner id="stop_monitor_name" entries="${monitorEntries}" /></vertical>
         </vertical>
     `;
+    
     const view = ui.inflate(viewXML, null, false);
 
+    // 1. 加载通用数据
     view.name.setText(task.name || '');
     view.delayMs.setText(String(task.delayMs || 0));
-    
     view.taskEnabled.setChecked(task.enabled !== false);
 
     const fieldsToShow = [task.type + "_fields"];
-    
-    if (task.type === 'ocr' || task.type === 'image' || task.type === 'wait_for_dissapear') {
+    if (['ocr', 'image', 'wait_for_dissapear'].includes(task.type)) {
         fieldsToShow.push('search_area_fields');
         if (task.search_area) {
             view.sa_x1.setText(String(task.search_area[0]));
@@ -4647,337 +4612,347 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             view.sa_y2.setText(String(task.search_area[3]));
         }
     }
-    if (task.type === 'ocr' || task.type === 'image') {
+    if (['ocr', 'image'].includes(task.type)) {
         fieldsToShow.push('cache_padding_fields');
         view.cache_padding_input.setText(String(task.cachePadding !== undefined ? task.cachePadding : (appSettings.defaultCachePadding || 50)));
     }
-
     fieldsToShow.forEach(id => { if (view[id]) view[id].setVisibility(0) });
 
+    // 2. 根据任务类型加载特定数据
     switch (task.type) {
-        // ... (所有 case 保持不变) ...
         case 'wait': view.wait_duration.setText(String(task.duration || 1000)); break;
-        case 'timer':
-            view.timer_name.setText(task.timerName || '');
-            view.timer_duration.setText(String(task.duration || 10000));
-            break;
+        case 'timer': view.timer_name.setText(task.timerName || ''); view.timer_duration.setText(String(task.duration || 10000)); break;
         case 'click':
-            view.click_x.setText(String(task.x || 0));
-            view.click_y.setText(String(task.y || 0));
-            view.click_offsetX.setText(String(task.offsetX || 0));
-            view.click_offsetY.setText(String(task.offsetY || 0));
+            view.click_x.setText(String(task.x || 0)); view.click_y.setText(String(task.y || 0));
+            view.click_offsetX.setText(String(task.offsetX || 0)); view.click_offsetY.setText(String(task.offsetY || 0));
             break;
-        case 'swipe': view.swipe_startX.setText(String(task.startX || 0)); view.swipe_startY.setText(String(task.startY || 0)); view.swipe_endX.setText(String(task.endX || 0)); view.swipe_endY.setText(String(task.endY || 0)); view.swipe_duration.setText(String(task.duration || 300)); break;
+        case 'swipe': 
+            view.swipe_startX.setText(String(task.startX || 0)); view.swipe_startY.setText(String(task.startY || 0)); 
+            view.swipe_endX.setText(String(task.endX || 0)); view.swipe_endY.setText(String(task.endY || 0)); 
+            view.swipe_duration.setText(String(task.duration || 300)); 
+            break;
+        
         case 'ocr':
             view.ocr_textToFind.setText(task.textToFind || "");
             view.ocr_timeout.setText(String(task.timeout || 5000));
-            if (task.onSuccess && task.onSuccess.action === 'execute_sequence') {
-                view.ocr_onSuccessAction.setSelection(2);
-                if (onDemandSequences.length > 0) {
-                    const ocrSuccessSeqIndex = onDemandSequences.findIndex(s => s.id === task.onSuccess.sequenceName);
-                    if (ocrSuccessSeqIndex > -1) view.ocr_onSuccessSequence.setSelection(ocrSuccessSeqIndex);
-                }
-            } else {
-                view.ocr_onSuccessAction.setSelection((task.onSuccess && task.onSuccess.action === 'back') ? 1 : 0);
-            }
+            
+            // 2a. 加载主动作 (Click, Back, Skip)
+            const ocrActionMap = {'click':0, 'back':1, 'skip':2}; // skip在这里表示"无操作"
+            const ocrAction = (task.onSuccess && task.onSuccess.action) || 'click';
+            view.ocr_onSuccessAction.setSelection(ocrActionMap[ocrAction] || 0);
+            
             view.ocr_offsetX.setText(String((task.onSuccess && task.onSuccess.offsetX) || 0));
             view.ocr_offsetY.setText(String((task.onSuccess && task.onSuccess.offsetY) || 0));
+            
+            // 监听主动作变化 -> 隐藏/显示偏移
+            view.ocr_onSuccessAction.setOnItemSelectedListener({
+                onItemSelected: (p,v,pos,id) => { view.ocr_click_offset_fields.setVisibility(pos === 0 ? 0 : 8); }
+            });
+            // 初始显示状态
+            view.ocr_click_offset_fields.setVisibility(view.ocr_onSuccessAction.getSelectedItemPosition() === 0 ? 0 : 8);
+
+            // 2b. 加载后续操作 (None, Sequence, Terminate)
+            let ocrAfterIndex = 0; // 0=None
+            if (task.onSuccess && task.onSuccess.after === 'sequence') ocrAfterIndex = 1;
+            else if (task.onSuccess && task.onSuccess.after === 'terminate') ocrAfterIndex = 2;
+            view.ocr_afterAction.setSelection(ocrAfterIndex);
+
+            if (ocrAfterIndex === 1 && onDemandSequences.length > 0) {
+                // 【修复】使用 var 避免重复声明
+                var idx = onDemandSequences.findIndex(s => s.id === task.onSuccess.sequenceName);
+                if (idx > -1) view.ocr_onSuccessSequence.setSelection(idx);
+            }
+            
+            // 监听后续操作变化 -> 显示序列选择器
+            view.ocr_afterAction.setOnItemSelectedListener({
+                onItemSelected: (p,v,pos,id) => { view.ocr_onSuccessSequence.setVisibility(pos === 1 ? 0 : 8); }
+            });
+            view.ocr_onSuccessSequence.setVisibility(ocrAfterIndex === 1 ? 0 : 8);
+
+            // 2c. 失败操作
             if (task.onFail && task.onFail.action === 'execute_sequence') {
                 view.ocr_onFailAction.setSelection(2);
                 if (onDemandSequences.length > 0) {
-                    const ocrFailSeqIndex = onDemandSequences.findIndex(s => s.id === task.onFail.sequenceName);
-                    if (ocrFailSeqIndex > -1) view.ocr_onFailSequence.setSelection(ocrFailSeqIndex);
+                    // 【修复】使用 var
+                    var idx = onDemandSequences.findIndex(s => s.id === task.onFail.sequenceName);
+                    if (idx > -1) view.ocr_onFailSequence.setSelection(idx);
                 }
             } else {
                 view.ocr_onFailAction.setSelection((task.onFail && task.onFail.action === 'skip') ? 1 : 0);
             }
-            view.ocr_onSuccessAction.setOnItemSelectedListener({
-                onItemSelected: (p, v, pos, id) => {
-                    view.ocr_click_offset_fields.setVisibility(pos === 0 ? 0 : 8);
-                    view.ocr_onSuccessSequence.setVisibility(pos === 2 ? 0 : 8);
-                }
-            });
             view.ocr_onFailAction.setOnItemSelectedListener({
-                onItemSelected: (p, v, pos, id) => {
-                    view.ocr_onFailSequence.setVisibility(pos === 2 ? 0 : 8);
-                }
+                onItemSelected: (p,v,pos,id) => { view.ocr_onFailSequence.setVisibility(pos === 2 ? 0 : 8); }
             });
-            view.ocr_click_offset_fields.setVisibility(view.ocr_onSuccessAction.getSelectedItemPosition() === 0 ? 0 : 8);
-            view.ocr_onSuccessSequence.setVisibility(view.ocr_onSuccessAction.getSelectedItemPosition() === 2 ? 0 : 8);
             view.ocr_onFailSequence.setVisibility(view.ocr_onFailAction.getSelectedItemPosition() === 2 ? 0 : 8);
 
+            // Cache Info
             if (task.cachedBounds) {
                 view.ocr_cache_info.setVisibility(0);
-                view.ocr_cached_bounds_display.setText(`[${task.cachedBounds.left}, ${task.cachedBounds.top}, ${task.cachedBounds.right}, ${task.cachedBounds.bottom}]`);
-                view.ocr_clear_cache_btn.click(() => {
-                    task.cachedBounds = null;
-                    view.ocr_cache_info.setVisibility(8);
-                    toast("缓存已清除，保存后生效。");
-                });
-                view.ocr_copy_cache_btn.click(() => {
-                    const b = task.cachedBounds;
-                    view.sa_x1.setText(String(b.left));
-                    view.sa_y1.setText(String(b.top));
-                    view.sa_x2.setText(String(b.right));
-                    view.sa_y2.setText(String(b.bottom));
-                    toast("缓存区域已写入搜索区");
-                });
+                view.ocr_cached_bounds_display.setText(`[${task.cachedBounds.left},${task.cachedBounds.top},${task.cachedBounds.right},${task.cachedBounds.bottom}]`);
+                view.ocr_clear_cache_btn.click(() => { task.cachedBounds = null; view.ocr_cache_info.setVisibility(8); toast("缓存已清除"); });
+                view.ocr_copy_cache_btn.click(() => { const b=task.cachedBounds; view.sa_x1.setText(String(b.left)); view.sa_y1.setText(String(b.top)); view.sa_x2.setText(String(b.right)); view.sa_y2.setText(String(b.bottom)); toast("已写入"); });
             }
             break;
+
         case 'image':
             view.image_file.setText(task.imageFile || "");
-            view.browse_image_file.click(() => {
-                showImageSelectorDialog((fileName) => {
-                    view.image_file.setText(fileName);
-                });
-            });
+            view.browse_image_file.click(() => { showImageSelectorDialog((f) => view.image_file.setText(f)); });
             view.image_threshold.setText(String(task.threshold || 0.8));
             view.image_timeout.setText(String(task.timeout || 5000));
-            if (task.onSuccess && task.onSuccess.action === 'execute_sequence') {
-                view.image_onSuccessAction.setSelection(2);
-                if (onDemandSequences.length > 0) {
-                    const imgSuccessSeqIndex = onDemandSequences.findIndex(s => s.id === task.onSuccess.sequenceName);
-                    if (imgSuccessSeqIndex > -1) view.image_onSuccessSequence.setSelection(imgSuccessSeqIndex);
-                }
-            } else {
-                view.image_onSuccessAction.setSelection((task.onSuccess && task.onSuccess.action === 'back') ? 1 : 0);
-            }
+
+            // 3a. 加载主动作
+            const imgActionMap = {'click':0, 'back':1, 'skip':2};
+            const imgAction = (task.onSuccess && task.onSuccess.action) || 'click';
+            view.image_onSuccessAction.setSelection(imgActionMap[imgAction] || 0);
+            
             view.image_offsetX.setText(String((task.onSuccess && task.onSuccess.offsetX) || 0));
             view.image_offsetY.setText(String((task.onSuccess && task.onSuccess.offsetY) || 0));
+            
+            view.image_onSuccessAction.setOnItemSelectedListener({
+                onItemSelected: (p,v,pos,id) => { view.image_click_offset_fields.setVisibility(pos === 0 ? 0 : 8); }
+            });
+            view.image_click_offset_fields.setVisibility(view.image_onSuccessAction.getSelectedItemPosition() === 0 ? 0 : 8);
+
+            // 3b. 加载后续操作
+            let imgAfterIndex = 0; 
+            if (task.onSuccess && task.onSuccess.after === 'sequence') imgAfterIndex = 1;
+            else if (task.onSuccess && task.onSuccess.after === 'terminate') imgAfterIndex = 2;
+            view.image_afterAction.setSelection(imgAfterIndex);
+
+            if (imgAfterIndex === 1 && onDemandSequences.length > 0) {
+                // 【修复】使用 var
+                var idx = onDemandSequences.findIndex(s => s.id === task.onSuccess.sequenceName);
+                if (idx > -1) view.image_onSuccessSequence.setSelection(idx);
+            }
+            
+            view.image_afterAction.setOnItemSelectedListener({
+                onItemSelected: (p,v,pos,id) => { view.image_onSuccessSequence.setVisibility(pos === 1 ? 0 : 8); }
+            });
+            view.image_onSuccessSequence.setVisibility(imgAfterIndex === 1 ? 0 : 8);
+
+            // 3c. 失败操作
             if (task.onFail && task.onFail.action === 'execute_sequence') {
                 view.image_onFailAction.setSelection(2);
                 if (onDemandSequences.length > 0) {
-                    const imgFailSeqIndex = onDemandSequences.findIndex(s => s.id === task.onFail.sequenceName);
-                    if (imgFailSeqIndex > -1) view.image_onFailSequence.setSelection(imgFailSeqIndex);
+                    // 【修复】使用 var
+                    var idx = onDemandSequences.findIndex(s => s.id === task.onFail.sequenceName);
+                    if (idx > -1) view.image_onFailSequence.setSelection(idx);
                 }
             } else {
                 view.image_onFailAction.setSelection((task.onFail && task.onFail.action === 'skip') ? 1 : 0);
             }
-            view.image_onSuccessAction.setOnItemSelectedListener({
-                onItemSelected: (p, v, pos, id) => {
-                    view.image_click_offset_fields.setVisibility(pos === 0 ? 0 : 8);
-                    view.image_onSuccessSequence.setVisibility(pos === 2 ? 0 : 8);
-                }
-            });
             view.image_onFailAction.setOnItemSelectedListener({
-                onItemSelected: (p, v, pos, id) => {
-                    view.image_onFailSequence.setVisibility(pos === 2 ? 0 : 8);
-                }
+                onItemSelected: (p,v,pos,id) => { view.image_onFailSequence.setVisibility(pos === 2 ? 0 : 8); }
             });
-            view.image_click_offset_fields.setVisibility(view.image_onSuccessAction.getSelectedItemPosition() === 0 ? 0 : 8);
-            view.image_onSuccessSequence.setVisibility(view.image_onSuccessAction.getSelectedItemPosition() === 2 ? 0 : 8);
             view.image_onFailSequence.setVisibility(view.image_onFailAction.getSelectedItemPosition() === 2 ? 0 : 8);
 
+            // Cache Info
             if (task.cachedBounds) {
                 view.image_cache_info.setVisibility(0);
-                view.image_cached_bounds_display.setText(`(x:${task.cachedBounds.x}, y:${task.cachedBounds.y}, w:${task.cachedBounds.width}, h:${task.cachedBounds.height})`);
-                view.image_clear_cache_btn.click(() => {
-                    task.cachedBounds = null;
-                    view.image_cache_info.setVisibility(8);
-                    toast("缓存已清除，保存后生效。");
-                });
-                view.image_copy_cache_btn.click(() => {
-                    const b = task.cachedBounds;
-                    view.sa_x1.setText(String(b.x));
-                    view.sa_y1.setText(String(b.y));
-                    view.sa_x2.setText(String(b.x + b.width));
-                    view.sa_y2.setText(String(b.y + b.height));
-                    toast("缓存区域已写入搜索区");
-                });
+                view.image_cached_bounds_display.setText(`x:${task.cachedBounds.x},y:${task.cachedBounds.y},w:${task.cachedBounds.width},h:${task.cachedBounds.height}`);
+                view.image_clear_cache_btn.click(() => { task.cachedBounds = null; view.image_cache_info.setVisibility(8); toast("缓存已清除"); });
+                view.image_copy_cache_btn.click(() => { const b=task.cachedBounds; view.sa_x1.setText(String(b.x)); view.sa_y1.setText(String(b.y)); view.sa_x2.setText(String(b.x+b.width)); view.sa_y2.setText(String(b.y+b.height)); toast("已写入"); });
             }
             break;
+
         case 'wait_for_dissapear':
-            const isImageType = task.targetType === 'image';
-            view.wfd_targetType.setSelection(isImageType ? 0 : 1);
+            const isImg = task.targetType === 'image';
+            view.wfd_targetType.setSelection(isImg ? 0 : 1);
             view.wfd_target.setText(task.target || "");
             view.wfd_findTimeout.setText(String(task.findTimeout || 5000));
             view.wfd_disappearTimeout.setText(String(task.disappearTimeout || 10000));
-            view.wfd_threshold.setText(String(task.threshold || 0.8));
-            view.wfd_image_options.setVisibility(isImageType ? 0 : 8);
-            function setupWfdActionSpinner(spinner, sequenceSpinner, actionObj, defaultAction, defaultSelection) {
+            if (isImg) view.wfd_threshold.setText(String(task.threshold || 0.8));
+            
+            function setupWfdSpinner(spinner, seqSpinner, actionObj, defAction, defSeqSelection) {
                 if (actionObj && actionObj.action === 'execute_sequence') {
                     spinner.setSelection(2);
                     if (onDemandSequences.length > 0) {
-                        const seqIndex = onDemandSequences.findIndex(s => s.id === actionObj.sequenceName);
-                        if (seqIndex > -1) sequenceSpinner.setSelection(seqIndex);
+                        // 【修复】使用 var
+                        var idx = onDemandSequences.findIndex(s => s.id === actionObj.sequenceName);
+                        if (idx > -1) seqSpinner.setSelection(idx);
                     }
                 } else {
-                    spinner.setSelection((actionObj && actionObj.action === defaultAction) ? 1 : 0);
+                    spinner.setSelection((actionObj && actionObj.action === defAction) ? 1 : 0);
                 }
-                sequenceSpinner.setVisibility(spinner.getSelectedItemPosition() === 2 ? 0 : 8);
+                seqSpinner.setVisibility(spinner.getSelectedItemPosition() === 2 ? 0 : 8);
             }
-            setupWfdActionSpinner(view.wfd_onSuccessAction, view.wfd_onSuccessSequence, task.onSuccess, 'back');
-            setupWfdActionSpinner(view.wfd_onFailAction, view.wfd_onFailSequence, task.onFail, 'skip');
-            setupWfdActionSpinner(view.wfd_onTimeoutAction, view.wfd_onTimeoutSequence, task.onTimeout, 'skip');
-            view.wfd_targetType.setOnItemSelectedListener({
-                onItemSelected: (p, v, pos, id) => {
-                    view.wfd_image_options.setVisibility(pos === 0 ? 0 : 8);
-                }
-            });
-            view.wfd_onSuccessAction.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => { view.wfd_onSuccessSequence.setVisibility(pos === 2 ? 0 : 8); } });
-            view.wfd_onFailAction.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => { view.wfd_onFailSequence.setVisibility(pos === 2 ? 0 : 8); } });
-            view.wfd_onTimeoutAction.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => { view.wfd_onTimeoutSequence.setVisibility(pos === 2 ? 0 : 8); } });
+            // Success: Back(1) else Skip(0)
+            setupWfdSpinner(view.wfd_onSuccessAction, view.wfd_onSuccessSequence, task.onSuccess, 'back', 'skip');
+            // Fail: Skip(1) else Stop(0)
+            setupWfdSpinner(view.wfd_onFailAction, view.wfd_onFailSequence, task.onFail, 'skip', 'stop');
+            // Timeout: Skip(1) else Stop(0)
+            setupWfdSpinner(view.wfd_onTimeoutAction, view.wfd_onTimeoutSequence, task.onTimeout, 'skip', 'stop');
+
+            view.wfd_targetType.setOnItemSelectedListener({ onItemSelected: (p,v,pos) => view.wfd_image_options.setVisibility(pos===0?0:8) });
+            view.wfd_onSuccessAction.setOnItemSelectedListener({ onItemSelected: (p,v,pos) => view.wfd_onSuccessSequence.setVisibility(pos===2?0:8) });
+            view.wfd_onFailAction.setOnItemSelectedListener({ onItemSelected: (p,v,pos) => view.wfd_onFailSequence.setVisibility(pos===2?0:8) });
+            view.wfd_onTimeoutAction.setOnItemSelectedListener({ onItemSelected: (p,v,pos) => view.wfd_onTimeoutSequence.setVisibility(pos===2?0:8) });
             break;
+
         case 'launch_app': view.launch_app_name.setText(task.appName || ""); break;
         case 'execute_sequence':
             if (onDemandSequences.length > 0) {
-                const execSeqIndex = onDemandSequences.findIndex(s => s.id === task.sequenceName);
-                if (execSeqIndex > -1) view.execute_sequence_name.setSelection(execSeqIndex);
+                // 【修复】使用 var
+                var idx = onDemandSequences.findIndex(s => s.id === task.sequenceName);
+                if (idx > -1) view.execute_sequence_name.setSelection(idx);
             }
             break;
         case 'start_monitor':
         case 'stop_monitor':
             if (monitorSequences.length > 0) {
-                const monitorSeqIndex = monitorSequences.findIndex(s => s.id === task.sequenceName);
-                if (monitorSeqIndex > -1) view[task.type + '_name'].setSelection(monitorSeqIndex);
+                // 【修复】使用 var
+                var idx = monitorSequences.findIndex(s => s.id === task.sequenceName);
+                if (idx > -1) view[task.type + '_name'].setSelection(idx);
             }
             break;
     }
 
+    // 3. 保存逻辑
     dialogs.build({ customView: view, title: `编辑任务`, positive: "保存", negative: "取消", neutral: "删除任务" })
         .on("positive", () => {
             task.name = view.name.getText().toString();
             task.delayMs = parseInt(view.delayMs.getText().toString()) || 0;
-            
             task.enabled = view.taskEnabled.isChecked();
 
-            // --- 核心修改 1C: 重新添加“序号”保存逻辑 ---
+            // 序号处理
             const newOrderStr = view.order.getText().toString();
             if (!validateNumericInput(newOrderStr)) return;
             const newOrder = parseInt(newOrderStr);
-            if (isNaN(newOrder) || newOrder < 1 || newOrder > taskList.length) {
-                toast(`序号不合法，请输入 1 到 ${taskList.length} 之间的数字。`); return;
-            }
-            // 只有当序号被修改时才执行 "splice"
-            if (newOrder !== currentOrder) {
+            if (newOrder !== currentOrder && newOrder > 0 && newOrder <= taskList.length) {
                 const currentTask = taskList.splice(currentOrder - 1, 1)[0];
                 taskList.splice(newOrder - 1, 0, currentTask);
             }
-            // --- 修改结束 ---
 
+            // Search Area & Padding
             if (['ocr', 'image', 'wait_for_dissapear'].includes(task.type)) {
-                const x1_str = view.sa_x1.getText().toString();
-                const y1_str = view.sa_y1.getText().toString();
-                const x2_str = view.sa_x2.getText().toString();
-                const y2_str = view.sa_y2.getText().toString();
-                
-                if (!x1_str && !y1_str && !x2_str && !y2_str) {
-                    delete task.search_area;
-                } else {
-                    const x1 = parseInt(x1_str || "0");
-                    const y1 = parseInt(y1_str || "0");
-                    const x2 = parseInt(x2_str || String(device.width));
-                    const y2 = parseInt(y2_str || String(device.height));
-                    task.search_area = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
-                }
+                const x1 = view.sa_x1.getText().toString(), y1 = view.sa_y1.getText().toString();
+                const x2 = view.sa_x2.getText().toString(), y2 = view.sa_y2.getText().toString();
+                if (!x1 && !y1 && !x2 && !y2) delete task.search_area;
+                else task.search_area = [parseInt(x1||0), parseInt(y1||0), parseInt(x2||device.width), parseInt(y2||device.height)].sort((a,b)=>a-b);
             }
-            
             if (['ocr', 'image'].includes(task.type)) {
-                const paddingText = view.cache_padding_input.getText().toString();
-                const parsedPadding = parseInt(paddingText);
-                const fallbackPadding = appSettings.defaultCachePadding || 50;
-                task.cachePadding = !isNaN(parsedPadding) ? parsedPadding : fallbackPadding;
+                const pt = view.cache_padding_input.getText().toString();
+                task.cachePadding = !isNaN(parseInt(pt)) ? parseInt(pt) : (appSettings.defaultCachePadding || 50);
             }
 
+            // 具体任务保存
             switch (task.type) {
-                // ... (所有 case 保持不变) ...
                 case 'wait': task.duration = parseInt(view.wait_duration.getText().toString()) || 1000; break;
-                case 'timer':
-                    task.timerName = view.timer_name.getText().toString();
-                    task.duration = parseInt(view.timer_duration.getText().toString()) || 10000;
-                    break;
+                case 'timer': task.timerName = view.timer_name.getText().toString(); task.duration = parseInt(view.timer_duration.getText().toString()) || 10000; break;
                 case 'click':
-                    task.x = parseFloat(view.click_x.getText().toString()) || 0;
-                    task.y = parseFloat(view.click_y.getText().toString()) || 0;
-                    task.offsetX = parseInt(view.click_offsetX.getText().toString()) || 0;
-                    task.offsetY = parseInt(view.click_offsetY.getText().toString()) || 0;
+                    task.x = parseFloat(view.click_x.getText().toString()) || 0; task.y = parseFloat(view.click_y.getText().toString()) || 0;
+                    task.offsetX = parseInt(view.click_offsetX.getText().toString()) || 0; task.offsetY = parseInt(view.click_offsetY.getText().toString()) || 0;
                     break;
-                case 'swipe': task.startX = parseFloat(view.swipe_startX.getText().toString()) || 0; task.startY = parseFloat(view.swipe_startY.getText().toString()) || 0; task.endX = parseFloat(view.swipe_endX.getText().toString()) || 0; task.endY = parseFloat(view.swipe_endY.getText().toString()) || 0; task.duration = parseInt(view.swipe_duration.getText().toString()) || 300; break;
+                case 'swipe':
+                    task.startX = parseFloat(view.swipe_startX.getText().toString()) || 0; task.startY = parseFloat(view.swipe_startY.getText().toString()) || 0;
+                    task.endX = parseFloat(view.swipe_endX.getText().toString()) || 0; task.endY = parseFloat(view.swipe_endY.getText().toString()) || 0;
+                    task.duration = parseInt(view.swipe_duration.getText().toString()) || 300;
+                    break;
+                
                 case 'ocr':
                     task.textToFind = view.ocr_textToFind.getText().toString();
                     task.timeout = parseInt(view.ocr_timeout.getText().toString()) || 5000;
-                    // ... (snip) ...
-                    const ocrSuccessActionIndex = view.ocr_onSuccessAction.getSelectedItemPosition();
-                    // 定义新的动作类型列表，索引 3 和 4 是新增的
-                    const OcrSuccessActions = ['click', 'back', 'execute_sequence', 'terminate', 'skip_loop'];
+                    
+                    // 保存主动作
+                    const ocrActions = ['click', 'back', 'skip']; // 对应 Spinner 索引
+                    task.onSuccess = {
+                        action: ocrActions[view.ocr_onSuccessAction.getSelectedItemPosition()],
+                        offsetX: parseInt(view.ocr_offsetX.getText().toString()) || 0,
+                        offsetY: parseInt(view.ocr_offsetY.getText().toString()) || 0
+                    };
 
-                    if (ocrSuccessActionIndex === 2) {
-                        // 索引 2: 调用序列
+                    // 保存后续动作 (After)
+                    const ocrAfterPos = view.ocr_afterAction.getSelectedItemPosition();
+                    if (ocrAfterPos === 1) { // Sequence
+                        task.onSuccess.after = 'sequence';
                         if (onDemandSequences.length > 0) {
-                            task.onSuccess = { action: 'execute_sequence', sequenceName: onDemandSequences[view.ocr_onSuccessSequence.getSelectedItemPosition()].id };
-                        } else { toast("无法保存：无可用序列供调用"); return; }
-                    } else if (ocrSuccessActionIndex === 3) {
-                        // 索引 3: 终止序列
-                        task.onSuccess = { action: 'terminate' };
-                    } else if (ocrSuccessActionIndex === 4) {
-                        // 索引 4: 跳过循环
-                        task.onSuccess = { action: 'skip_loop' };
+                            task.onSuccess.sequenceName = onDemandSequences[view.ocr_onSuccessSequence.getSelectedItemPosition()].id;
+                        }
+                    } else if (ocrAfterPos === 2) { // Terminate
+                        task.onSuccess.after = 'terminate';
                     } else {
-                        // 索引 0, 1: 点击或返回
-                        task.onSuccess = {
-                            action: OcrSuccessActions[ocrSuccessActionIndex],
-                            offsetX: parseInt(view.ocr_offsetX.getText().toString()) || 0,
-                            offsetY: parseInt(view.ocr_offsetY.getText().toString()) || 0
-                        };
+                        task.onSuccess.after = 'none';
                     }
-                    // ... (snip) ...
+
+                    // 保存失败动作
+                    const ocrFailPos = view.ocr_onFailAction.getSelectedItemPosition();
+                    if (ocrFailPos === 2) {
+                        if (onDemandSequences.length > 0) {
+                            task.onFail = { action: 'execute_sequence', sequenceName: onDemandSequences[view.ocr_onFailSequence.getSelectedItemPosition()].id };
+                        }
+                    } else {
+                        task.onFail = { action: ocrFailPos === 0 ? 'stop' : 'skip' };
+                    }
                     break;
+
                 case 'image':
                     task.imageFile = view.image_file.getText().toString();
                     task.threshold = parseFloat(view.image_threshold.getText().toString()) || 0.8;
                     task.timeout = parseInt(view.image_timeout.getText().toString()) || 5000;
-                    // ... (snip) ...
-                    const imgSuccessActionIndex = view.image_onSuccessAction.getSelectedItemPosition();
-                    const ImgSuccessActions = ['click', 'back', 'execute_sequence', 'terminate', 'skip_loop']; // 新数组
 
-                    if (imgSuccessActionIndex === 2) {
-                        // 索引 2: 调用序列
+                    // 保存主动作
+                    const imgActions = ['click', 'back', 'skip'];
+                    task.onSuccess = {
+                        action: imgActions[view.image_onSuccessAction.getSelectedItemPosition()],
+                        offsetX: parseInt(view.image_offsetX.getText().toString()) || 0,
+                        offsetY: parseInt(view.image_offsetY.getText().toString()) || 0
+                    };
+
+                    // 保存后续动作
+                    const imgAfterPos = view.image_afterAction.getSelectedItemPosition();
+                    if (imgAfterPos === 1) {
+                        task.onSuccess.after = 'sequence';
                         if (onDemandSequences.length > 0) {
-                            task.onSuccess = { action: 'execute_sequence', sequenceName: onDemandSequences[view.image_onSuccessSequence.getSelectedItemPosition()].id };
-                        } else { toast("无法保存：无可用序列供调用"); return; }
-                    } else if (imgSuccessActionIndex === 3) {
-                        // 索引 3: 终止序列
-                        task.onSuccess = { action: 'terminate' };
-                    } else if (imgSuccessActionIndex === 4) {
-                        // 索引 4: 跳过循环
-                        task.onSuccess = { action: 'skip_loop' };
+                            task.onSuccess.sequenceName = onDemandSequences[view.image_onSuccessSequence.getSelectedItemPosition()].id;
+                        }
+                    } else if (imgAfterPos === 2) {
+                        task.onSuccess.after = 'terminate';
                     } else {
-                        // 索引 0, 1: 点击或返回
-                        task.onSuccess = {
-                            action: ImgSuccessActions[imgSuccessActionIndex],
-                            offsetX: parseInt(view.image_offsetX.getText().toString()) || 0,
-                            offsetY: parseInt(view.image_offsetY.getText().toString()) || 0
-                        };
+                        task.onSuccess.after = 'none';
                     }
-                    // ... (snip) ...
+
+                    // 保存失败动作
+                    const imgFailPos = view.image_onFailAction.getSelectedItemPosition();
+                    if (imgFailPos === 2) {
+                        if (onDemandSequences.length > 0) {
+                            task.onFail = { action: 'execute_sequence', sequenceName: onDemandSequences[view.image_onFailSequence.getSelectedItemPosition()].id };
+                        }
+                    } else {
+                        task.onFail = { action: imgFailPos === 0 ? 'stop' : 'skip' };
+                    }
                     break;
+
                 case 'wait_for_dissapear':
                     task.targetType = view.wfd_targetType.getSelectedItemPosition() === 0 ? 'image' : 'ocr';
                     task.target = view.wfd_target.getText().toString();
                     task.findTimeout = parseInt(view.wfd_findTimeout.getText().toString()) || 5000;
                     task.disappearTimeout = parseInt(view.wfd_disappearTimeout.getText().toString()) || 10000;
-                    if (task.targetType === 'image') {
-                        task.threshold = parseFloat(view.wfd_threshold.getText().toString()) || 0.8;
-                    }
-                    function getWfdAction(spinner, sequenceSpinner, defaultAction, defaultSelection) {
-                        const index = spinner.getSelectedItemPosition();
-                        if (index === 2) {
-                            if (onDemandSequences.length > 0) {
-                                return { action: 'execute_sequence', sequenceName: onDemandSequences[sequenceSpinner.getSelectedItemPosition()].id };
-                            } else {
-                                toast("无法保存：无可用序列供调用"); return null; 
-                            }
+                    if (task.targetType === 'image') task.threshold = parseFloat(view.wfd_threshold.getText().toString()) || 0.8;
+                    
+                    const getWfdAct = (sp, seqSp, def) => {
+                        const idx = sp.getSelectedItemPosition();
+                        if (idx === 2) {
+                            if (onDemandSequences.length > 0) return { action: 'execute_sequence', sequenceName: onDemandSequences[seqSp.getSelectedItemPosition()].id };
+                            return { action: def };
                         }
-                        return { action: index === 1 ? defaultAction : defaultSelection };
-                    }
-                    const onSuccess = getWfdAction(view.wfd_onSuccessAction, view.wfd_onSuccessSequence, 'back', 'skip');
-                    const onFail = getWfdAction(view.wfd_onFailAction, view.wfd_onFailSequence, 'skip', 'stop');
-                    const onTimeout = getWfdAction(view.wfd_onTimeoutAction, view.wfd_onTimeoutSequence, 'skip', 'stop');
-                    if (!onSuccess || !onFail || !onTimeout) return; 
-                    task.onSuccess = onSuccess;
-                    task.onFail = onFail;
-                    task.onTimeout = onTimeout;
+                        return { action: idx === 1 ? def : (def==='back'?'skip':'stop') }; // Simplified mapping
+                    };
+                    
+                    const wfdSuccIdx = view.wfd_onSuccessAction.getSelectedItemPosition();
+                    if (wfdSuccIdx===2 && onDemandSequences.length>0) task.onSuccess = { action:'execute_sequence', sequenceName:onDemandSequences[view.wfd_onSuccessSequence.getSelectedItemPosition()].id };
+                    else task.onSuccess = { action: wfdSuccIdx===1?'back':'skip' };
+
+                    // Fail: Stop(0), Skip(1), Seq(2)
+                    const wfdFailIdx = view.wfd_onFailAction.getSelectedItemPosition();
+                    if (wfdFailIdx===2 && onDemandSequences.length>0) task.onFail = { action:'execute_sequence', sequenceName:onDemandSequences[view.wfd_onFailSequence.getSelectedItemPosition()].id };
+                    else task.onFail = { action: wfdFailIdx===1?'skip':'stop' };
+
+                    // Timeout: Stop(0), Skip(1), Seq(2)
+                    const wfdToutIdx = view.wfd_onTimeoutAction.getSelectedItemPosition();
+                    if (wfdToutIdx===2 && onDemandSequences.length>0) task.onTimeout = { action:'execute_sequence', sequenceName:onDemandSequences[view.wfd_onTimeoutSequence.getSelectedItemPosition()].id };
+                    else task.onTimeout = { action: wfdToutIdx===1?'skip':'stop' };
                     break;
+
                 case 'launch_app': task.appName = view.launch_app_name.getText().toString(); break;
                 case 'execute_sequence':
                     if (onDemandSequences.length > 0) {
@@ -4994,6 +4969,7 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                     }
                     break;
             }
+
             recreateAllTaskVisuals();
             saveCurrentProfileThrottled();
             toast("任务已保存");
@@ -5293,6 +5269,8 @@ function populateGraphicalSettings() {
             ui.swipeTaskColorInput.setText(appSettings.theme.taskSwipeColor);
             // --- 在这里添加新行 ---
             ui.defaultCachePaddingInput.setText(String(appSettings.defaultCachePadding || 50));
+            // --- 在这里添加新行 ---
+            ui.defaultCachePaddingInput.setText(String(appSettings.defaultCachePadding || 50));
         });
     }
 }
@@ -5508,7 +5486,27 @@ function migrateLegacyProfile(legacyConfig) {
     return newSequences;
 }
 
+// --- 替换 loadLastUsedProfile (约 4436 行) ---
+function loadLastUsedProfile() {
+    // 【修改点】：添加 profileTimestamps 默认值
+    const DEFAULTS = { lastProfile: null, hasSeenTutorial: false, profileTimestamps: {} };
+    if (files.exists(CONSTANTS.FILES.META_CONFIG_FILE)) {
+        try {
+            const loadedMeta = JSON.parse(files.read(CONSTANTS.FILES.META_CONFIG_FILE));
+            metaConfig = Object.assign({}, DEFAULTS, loadedMeta);
+            if (!metaConfig.profileTimestamps) metaConfig.profileTimestamps = {}; // 确保初始化
+            if (loadedMeta.mainSequenceKey) metaConfig.mainSequenceKey = loadedMeta.mainSequenceKey;
+            if (loadedMeta.mainMonitorKey) metaConfig.mainMonitorKey = loadedMeta.mainMonitorKey;
+        } catch (e) {
+            logErrorToScreen("读取元配置文件失败，使用默认。");
+            metaConfig = DEFAULTS;
+        }
+    }
+    let profileToLoad = metaConfig.lastProfile || CONSTANTS.FILES.PROFILE_PREFIX + "default.json";
+    loadProfile(profileToLoad);
+}
 
+// --- 替换 loadProfile (约 4475 行) ---
 function loadProfile(profileName) {
     const profilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, profileName);
     if (files.exists(profilePath)) {
@@ -5534,7 +5532,7 @@ function loadProfile(profileName) {
             let finalSettings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
             appSettings = mergeDeep(finalSettings, loadedConfig.settings || {});
 
-            // MIGRATION: If old profile is loaded, check global metaConfig for main keys
+            // MIGRATION: 保持迁移逻辑
             if (loadedConfig.settings && loadedConfig.settings.mainSequenceKey === undefined && metaConfig.mainSequenceKey) {
                 logToScreen("正在迁移旧版全局主序列设置...");
                 appSettings.mainSequenceKey = metaConfig.mainSequenceKey;
@@ -5556,6 +5554,10 @@ function loadProfile(profileName) {
 
             currentProfileName = profileName;
 
+            // 【MRU 核心修改】: 更新时间戳并保存元数据
+            metaConfig.profileTimestamps[profileName] = Date.now();
+            saveMetaConfig();
+
             logToScreen(`方案 "${profileName.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', '')}" 加载成功。`);
             return true;
         } catch (e) {
@@ -5569,23 +5571,6 @@ function loadProfile(profileName) {
         resetToDefaultProfile();
         return false;
     }
-}
-function loadLastUsedProfile() {
-    const DEFAULTS = { lastProfile: null, hasSeenTutorial: false };
-    if (files.exists(CONSTANTS.FILES.META_CONFIG_FILE)) {
-        try {
-            const loadedMeta = JSON.parse(files.read(CONSTANTS.FILES.META_CONFIG_FILE));
-            metaConfig = Object.assign({}, DEFAULTS, loadedMeta);
-            // MIGRATION: Load old global keys for the first time if they exist, to be moved to profile file
-            if (loadedMeta.mainSequenceKey) metaConfig.mainSequenceKey = loadedMeta.mainSequenceKey;
-            if (loadedMeta.mainMonitorKey) metaConfig.mainMonitorKey = loadedMeta.mainMonitorKey;
-        } catch (e) {
-            logErrorToScreen("读取元配置文件失败，使用默认。");
-            metaConfig = DEFAULTS;
-        }
-    }
-    let profileToLoad = metaConfig.lastProfile || CONSTANTS.FILES.PROFILE_PREFIX + "default.json";
-    loadProfile(profileToLoad);
 }
 function resetToDefaultProfile() {
     currentProfileName = CONSTANTS.FILES.PROFILE_PREFIX + "default.json";
@@ -5612,118 +5597,178 @@ function resetToDefaultProfile() {
 }
 function showProfileManager() {
     if (isBusy()) return;
-    const profiles = files.listDir(CONSTANTS.FILES.CONFIG_DIR).filter(name => name.startsWith(CONSTANTS.FILES.PROFILE_PREFIX) && name.endsWith('.json'));
-    profiles.sort(); // <-- 在这里添加这行代码
-    const displayNames = profiles.map(name => name.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', ''));
-    const currentProfileDisplayName = currentProfileName.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', '');
-    displayNames.unshift("【创建新方案】");
-    displayNames.push("【关闭】"); // <-- 在这里添加新行
-    dialogs.select(`请选择一个方案进行操作\n(当前: ${currentProfileDisplayName})`, displayNames)
-        .then(selectedIndex => {
-            if (selectedIndex < 0) { toast("操作已取消"); return; }
-            // --- 在这里添加新的判断 ---
-            if (selectedIndex === displayNames.length - 1) {
-                // 因为 "【关闭】" 是我们添加的最后一个选项
-                toast("已关闭");
-                return;
-            }
-            // --- 添加结束 ---
-            if (selectedIndex === 0) {
-                dialogs.rawInput("为新方案输入名称", "我的新方案").then(newName => {
-                    newName = newName.trim();
-                    if (!newName || newName.includes('/') || newName.includes('\\') || newName === 'default') {
-                        toast("名称不合法或与默认方案冲突!");
-                        return;
-                    }
-                    const newProfileName = CONSTANTS.FILES.PROFILE_PREFIX + newName + ".json";
-                    const newProfilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, newProfileName);
-                    if (files.exists(newProfilePath)) {
-                        toast("错误：同名方案已存在！");
-                        return;
-                    }
-                    currentProfileName = newProfileName;
-                    resetToDefaultProfile();
-                    saveCurrentProfileThrottled();
-                    refreshAllUI();
-                    toast(`已创建并加载新方案: "${newName}"`);
-                    logToScreen(`已创建并加载新方案: "${newName}"`);
-                });
-                return;
-            }
-            const profileIndex = selectedIndex - 1;
-            const selectedProfile = profiles[profileIndex];
-            const selectedDisplayName = displayNames[selectedIndex];
-            const actions = ["加载", "另存为...", "删除"];
-            if (selectedProfile === CONSTANTS.FILES.PROFILE_PREFIX + "default.json") {
-                actions.pop();
-            }
-            dialogs.select(`请选择对 [${selectedDisplayName}] 的操作`, actions)
-                .then(actionIndex => {
-                    if (actionIndex < 0) return;
-                    switch (actions[actionIndex]) {
-                        case "加载":
-                        if (loadProfile(selectedProfile)) { 
-                            saveCurrentProfileThrottled(); 
-                            refreshAllUI(); 
-                            toast(`方案 "${selectedDisplayName}" 加载成功`); 
+    const dialogView = ui.inflate(
+        <vertical>
+            <ScrollView h="400dp">
+                <vertical id="sequenceListContainer" />
+            </ScrollView>
+            
+            {/* 底部只保留返回主窗口按钮 */}
+            <horizontal>
+                <button id="showAppBtn" text="返回主窗口" layout_weight="1" style="Widget.AppCompat.Button.Borderless.Colored" />
+            </horizontal>
+        </vertical>, null, false);
 
-                            // --- 核心修复：重置“编辑”选项卡到 Level 1 ---
+    // 清理当前方案名称，用于显示
+    let displayName = "未知";
+    if (currentProfileName) {
+        displayName = currentProfileName.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', '');
+    }
+    const dialogTitle = `方案管理器 (当前: ${displayName})`;
+
+    const dialog = dialogs.build({
+        customView: dialogView,
+        title: dialogTitle,
+        positive: "关闭",
+        neutral: "退出脚本"
+    }).on("neutral", closeAllAndExit).show();
+
+    function populateSequenceList(container) {
+        ui.run(() => {
+            container.removeAllViews();
+            
+            const profiles = files.listDir(CONSTANTS.FILES.CONFIG_DIR).filter(name => name.startsWith(CONSTANTS.FILES.PROFILE_PREFIX) && name.endsWith('.json'));
+
+            // 1. 【MRU 核心逻辑】: 获取时间戳并排序
+            const sortedProfiles = profiles.map(name => {
+                const timestamp = metaConfig.profileTimestamps[name] || 0;
+                return { name, timestamp };
+            })
+            .sort((a, b) => {
+                if (b.timestamp !== a.timestamp) return b.timestamp - a.timestamp;
+                return a.name.localeCompare(b.name);
+            })
+            .map(p => p.name);
+
+            // 2. 创建显示名称列表 (包含操作选项)
+            const displayNames = sortedProfiles.map(name => name.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', ''));
+            displayNames.unshift("【创建新方案】");
+            displayNames.push("【关闭】");
+
+            // 3. 遍历排序后的列表来创建视图
+            sortedProfiles.forEach((key, index) => { 
+                const displayName = displayNames[index + 1]; 
+                
+                const itemView = ui.inflate(
+                    <card w="*" margin="8 4" cardCornerRadius="8dp" cardElevation="2dp" bg="{{CONSTANTS.UI.THEME.SECONDARY_CARD}}">
+                        <horizontal w="*" gravity="center_vertical" padding="16 12">
+                            <text id="seqIcon" textSize="18sp" marginRight="12" />
+                            <text id="seqName" layout_weight="1" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" ellipsize="end" maxLines="1" />
+                            <text text=">" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" />
+                        </horizontal>
+                    </card>, container, false);
+
+                const isCurrent = key === currentProfileName;
+                itemView.seqIcon.setText(isCurrent ? "⭐" : "🗂️");
+                itemView.seqName.setText(displayName);
+
+                itemView.click(() => {
+                    // Load action logic
+                    if (loadProfile(key)) { 
+                        saveCurrentProfileThrottled(); 
+                        refreshAllUI(); 
+                        if (ui.sequenceEditorView && ui.sequenceEditorView.getChildCount() > 0) {
                             ui.run(() => {
-                                // 检查“编辑”选项卡是否已经被渲染过
-                                if (ui.sequenceEditorView && ui.sequenceEditorView.getChildCount() > 0) {
-                                    logToScreen("检测到方案加载，正在重置‘编辑’选项卡...");
-
-                                    // 1. 彻底清空当前视图 (无论是 L2 还是 L3)
-                                    ui.sequenceEditorView.removeAllViews();
-
-                                    // 2. 重新渲染 Level 1 (序列列表)
-                                    // (这个函数会自动注册搜索框并填充列表)
-                                    renderSequenceListEditor();
-                                }
+                                ui.sequenceEditorView.removeAllViews();
+                                renderSequenceListEditor();
                             });
-                            // --- 修复结束 ---
                         }
-                        break;
-                        case "另存为...":
-                            dialogs.rawInput("为新方案输入名称", "").then(newName => {
-                                newName = newName.trim();
-                                if (!newName || newName.includes('/') || newName.includes('\\')) { toast("名称不能为空且不能包含特殊字符!"); return; }
-                                const newProfileName = CONSTANTS.FILES.PROFILE_PREFIX + newName + ".json";
-                                const newProfilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, newProfileName);
-                                if (files.exists(newProfilePath)) { toast("错误：同名方案已存在！"); return; }
-                                const sourceProfilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, selectedProfile);
-                                if (files.copy(sourceProfilePath, newProfilePath)) {
-                                    currentProfileName = newProfileName;
-                                    loadProfile(currentProfileName);
-                                    saveCurrentProfileThrottled();
-                                    refreshAllUI();
-                                    toast(`方案已另存为 "${newName}" 并加载！`);
-                                    logToScreen(`方案 "${selectedDisplayName}" 已另存为 "${newName}" 并自动加载。`);
-                                } else {
-                                    toast("另存为失败！无法复制文件。");
-                                }
-                            });
-                            break;
-                        case "删除":
-                            dialogs.confirm("确定删除?", `将永久删除方案: "${selectedDisplayName}"`).then(ok => {
-                                if (ok) {
-                                    const profilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, selectedProfile);
-                                    if (files.remove(profilePath)) {
-                                        toast("删除成功");
-                                        logToScreen(`方案 "${selectedDisplayName}" 已被删除。`);
-                                        if (currentProfileName === selectedProfile) {
-                                            resetToDefaultProfile();
-                                            refreshAllUI();
-                                        }
-                                    } else {
-                                        toast("删除失败");
-                                    }
-                                }
-                            });
-                            break;
+                        dialog.dismiss();
+                        toast(`方案 "${displayName}" 加载成功`); 
                     }
                 });
+
+                // Long click: Shows options (Load, Save As, Delete)
+                itemView.longClick(() => {
+                    const profileName = displayName;
+                    let actions = ["加载", "另存为...", "删除"];
+                    if (key === CONSTANTS.FILES.PROFILE_PREFIX + "default.json") {
+                        actions.pop();
+                    }
+                    dialogs.select(`操作: [${profileName}]`, actions)
+                        .then(actionIndex => {
+                            if (actionIndex < 0) return;
+                            switch (actions[actionIndex]) {
+                                case "加载":
+                                    if (loadProfile(key)) { 
+                                        saveCurrentProfileThrottled(); 
+                                        refreshAllUI(); 
+                                        if (ui.sequenceEditorView && ui.sequenceEditorView.getChildCount() > 0) {
+                                            ui.run(() => {
+                                                ui.sequenceEditorView.removeAllViews();
+                                                renderSequenceListEditor();
+                                            });
+                                        }
+                                        populateSequenceList(container); 
+                                        toast(`方案 "${displayName}" 加载成功`); 
+                                    }
+                                    break;
+                                case "另存为...":
+                                    dialogs.rawInput("输入新方案的名称", `${profileName}_copy`).then(newName => {
+                                        newName = newName.trim();
+                                        if (!newName || newName.includes('/') || newName.includes('\\') || newName === 'default') { toast("名称不合法!"); return; }
+                                        const newProfileName = CONSTANTS.FILES.PROFILE_PREFIX + newName + ".json";
+                                        const newProfilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, newProfileName);
+                                        if (files.exists(newProfilePath)) { toast("错误：同名方案已存在！"); return; }
+                                        const sourceProfilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, key);
+                                        if (files.copy(sourceProfilePath, newProfilePath)) {
+                                            currentProfileName = newProfileName;
+                                            loadProfile(currentProfileName);
+                                            saveCurrentProfileThrottled();
+                                            refreshAllUI();
+                                            populateSequenceList(container); 
+                                            toast(`方案已另存为 "${newName}" 并加载！`);
+                                        } else {
+                                            toast("另存为失败！无法复制文件。");
+                                        }
+                                    });
+                                    break;
+                                case "删除":
+                                    dialogs.confirm("确定删除?", `将永久删除方案: "${displayName}"`).then(ok => {
+                                        if (ok) {
+                                            const profilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, key);
+                                            if (files.remove(profilePath)) {
+                                                if (currentProfileName === key) {
+                                                    resetToDefaultProfile();
+                                                    refreshAllUI();
+                                                }
+                                                populateSequenceList(container); 
+                                                toast("删除成功");
+                                            } else {
+                                                toast("删除失败");
+                                            }
+                                        }
+                                    });
+                                    break;
+                            }
+                        });
+                    return true;
+                });
+                container.addView(itemView);
+            });
         });
+    }
+
+    // 【只保留 showAppBtn 的处理逻辑】
+    // 逻辑被修改为处理“创建新方案”的点击，即原来的 index 0
+    // V3: 列表中的第一个项目是“创建新方案”。这里处理列表外的按钮逻辑。
+    // 由于 XML 中只剩下一个按钮，我们只处理这个按钮的点击。
+    
+    // 【核心修复】：将 click 事件绑定到 '创建新方案' 的逻辑上 (因为列表项 0 就是创建新方案)
+    // 但在 list view 中，第 0 项是 Create New Profile. 我们在这里处理
+    
+    dialogView.showAppBtn.click(() => {
+        app.launch(context.getPackageName()); 
+        toast("正在显示主窗口...");
+        dialog.dismiss();
+    });
+
+    // 这里处理“创建新方案”的逻辑，用户需要点击列表中的第一个元素
+    // 但如果用户点击的是“主窗口”按钮，则执行上述逻辑。
+    
+    // 为了兼容性，我们保留原来处理 list item 0 (创建新方案) 的逻辑，以便用户点击列表第一项时触发
+    
+    populateSequenceList(dialogView.sequenceListContainer);
 }
 function displayConfigInEditor() { if (!ui.configEditor) return; const config = { version: CONSTANTS.VERSION, settings: appSettings, sequences: sequences }; ui.run(() => { ui.configEditor.setText(JSON.stringify(config, null, 2)); }); }
 function showImportExportDialog() { dialogs.select("导入/导出当前方案", ["导入 (覆盖当前)", "导出"]).then(i => { if (i < 0) return; if (i === 0) { importConfiguration(); } else if (i === 1) { exportConfiguration(); } }); }
