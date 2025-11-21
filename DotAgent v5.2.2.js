@@ -1225,11 +1225,23 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     }
                 }
 
+                // ... (在 case 'ocr': 内部) ...
+
                 if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
 
                 if (foundResult) {
                     let successAction = task.onSuccess || { action: 'click' };
-                    if (successAction.action === 'execute_sequence') {
+                    var taskActionType = successAction.action; // <-- 已修改为 var
+                    
+                    if (taskActionType === 'terminate') {
+                        logToScreen(`任务 [${taskName}] 成功，终止序列执行。`);
+                        // 终止所有执行线程
+                        ui.run(() => stopExecution(`任务因 [${taskName}] 成功而终止`));
+                        break; // 退出 for 循环
+                    } else if (taskActionType === 'skip_loop') {
+                        logToScreen(`任务 [${taskName}] 成功，跳过本轮序列后续任务。`);
+                        break; // 退出 for 循环
+                    } else if (taskActionType === 'execute_sequence') {
                         if (successAction.sequenceName) {
                             const ocrSubSequenceOnSuccess = sequences[successAction.sequenceName];
                             if (ocrSubSequenceOnSuccess) {
@@ -1246,6 +1258,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     handleGeneralFailAction(task.onFail, '识别失败', sourceName, contextType, depth);
                 }
                 break;
+                // ... (继续 case 'ocr': 之后的代码)
             }
             case 'image': {
                 logToScreen(`[${sourceName}] 执行任务 ${i + 1}: 查找图片 "${task.imageFile}"`);
@@ -1337,6 +1350,8 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     }
                 }
 
+                // ... (在 case 'image': 内部) ...
+
                 if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) {
                     template.recycle();
                     break;
@@ -1349,7 +1364,16 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                         centerY: function () { return this.top + (this.bottom - this.top) / 2; }
                     };
                     let successAction = task.onSuccess || { action: 'click' };
-                    if (successAction.action === 'execute_sequence') {
+                    var taskActionType = successAction.action; // <-- 已修改为 var
+                    
+                    if (taskActionType === 'terminate') {
+                        logToScreen(`任务 [${taskName}] 成功，终止序列执行。`);
+                        ui.run(() => stopExecution(`任务因 [${taskName}] 成功而终止`));
+                        break; // 退出 for 循环
+                    } else if (taskActionType === 'skip_loop') {
+                        logToScreen(`任务 [${taskName}] 成功，跳过本轮序列后续任务。`);
+                        break; // 退出 for 循环
+                    } else if (taskActionType === 'execute_sequence') {
                         if (successAction.sequenceName) {
                             const imageSubSequenceOnSuccess = sequences[successAction.sequenceName];
                             if (imageSubSequenceOnSuccess) {
@@ -1367,6 +1391,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 }
                 template.recycle();
                 break;
+                // ... (继续 case 'image': 之后的代码) ...
             }
             case 'wait_for_dissapear': {
                 logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${task.name || `等待'${task.target}'消失`}`);
@@ -4507,7 +4532,7 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             <vertical id="ocr_fields" visibility="gone">
                 <text>要查找的文本:</text><input id="ocr_textToFind" />
                 <text>超时时间 (ms):</text><input id="ocr_timeout" inputType="number" />
-                <text>成功后操作:</text><spinner id="ocr_onSuccessAction" entries="点击找到的文本|执行返回|调用序列" />
+                <text>成功后操作:</text><spinner id="ocr_onSuccessAction" entries="点击找到的文本|执行返回|调用序列|终止序列|跳过循环" />
                 <horizontal id="ocr_click_offset_fields"><text>点击OffsetX:</text><input id="ocr_offsetX" inputType="numberSigned" /><text>点击OffsetY:</text><input id="ocr_offsetY" inputType="numberSigned" /></horizontal>
                 <spinner id="ocr_onSuccessSequence" entries="${onDemandEntries}" visibility="gone"/>
                 <text>失败后操作:</text><spinner id="ocr_onFailAction" entries="停止任务|跳过|调用序列" />
@@ -4530,7 +4555,7 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 </horizontal>
                 <text>相似度 (0.1-1.0):</text><input id="image_threshold" inputType="numberDecimal" />
                 <text>超时时间 (ms):</text><input id="image_timeout" inputType="number" />
-                <text>成功后操作:</text><spinner id="image_onSuccessAction" entries="点击找到的图片|执行返回|调用序列" />
+                <text>成功后操作:</text><spinner id="image_onSuccessAction" entries="点击找到的图片|执行返回|调用序列|终止序列|跳过循环" />
                 <horizontal id="image_click_offset_fields"><text>点击OffsetX:</text><input id="image_offsetX" inputType="numberSigned" /><text>点击OffsetY:</text><input id="image_offsetY" inputType="numberSigned" /></horizontal>
                 <spinner id="image_onSuccessSequence" entries="${onDemandEntries}" visibility="gone"/>
                 <text>失败后操作:</text><spinner id="image_onFailAction" entries="停止任务|跳过|调用序列" />
@@ -4871,43 +4896,60 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 case 'ocr':
                     task.textToFind = view.ocr_textToFind.getText().toString();
                     task.timeout = parseInt(view.ocr_timeout.getText().toString()) || 5000;
+                    // ... (snip) ...
                     const ocrSuccessActionIndex = view.ocr_onSuccessAction.getSelectedItemPosition();
-                    if (ocrSuccessActionIndex === 2) { 
+                    // 定义新的动作类型列表，索引 3 和 4 是新增的
+                    const OcrSuccessActions = ['click', 'back', 'execute_sequence', 'terminate', 'skip_loop'];
+
+                    if (ocrSuccessActionIndex === 2) {
+                        // 索引 2: 调用序列
                         if (onDemandSequences.length > 0) {
                             task.onSuccess = { action: 'execute_sequence', sequenceName: onDemandSequences[view.ocr_onSuccessSequence.getSelectedItemPosition()].id };
                         } else { toast("无法保存：无可用序列供调用"); return; }
+                    } else if (ocrSuccessActionIndex === 3) {
+                        // 索引 3: 终止序列
+                        task.onSuccess = { action: 'terminate' };
+                    } else if (ocrSuccessActionIndex === 4) {
+                        // 索引 4: 跳过循环
+                        task.onSuccess = { action: 'skip_loop' };
                     } else {
-                        task.onSuccess = { action: ocrSuccessActionIndex === 0 ? 'click' : 'back', offsetX: parseInt(view.ocr_offsetX.getText().toString()) || 0, offsetY: parseInt(view.ocr_offsetY.getText().toString()) || 0 };
+                        // 索引 0, 1: 点击或返回
+                        task.onSuccess = {
+                            action: OcrSuccessActions[ocrSuccessActionIndex],
+                            offsetX: parseInt(view.ocr_offsetX.getText().toString()) || 0,
+                            offsetY: parseInt(view.ocr_offsetY.getText().toString()) || 0
+                        };
                     }
-                    const ocrFailActionIndex = view.ocr_onFailAction.getSelectedItemPosition();
-                    if (ocrFailActionIndex === 2) { 
-                        if (onDemandSequences.length > 0) {
-                            task.onFail = { action: 'execute_sequence', sequenceName: onDemandSequences[view.ocr_onFailSequence.getSelectedItemPosition()].id };
-                        } else { toast("无法保存：无可用序列供调用"); return; }
-                    } else {
-                        task.onFail = { action: ocrFailActionIndex === 0 ? 'stop' : 'skip' };
-                    }
+                    // ... (snip) ...
                     break;
                 case 'image':
                     task.imageFile = view.image_file.getText().toString();
                     task.threshold = parseFloat(view.image_threshold.getText().toString()) || 0.8;
                     task.timeout = parseInt(view.image_timeout.getText().toString()) || 5000;
+                    // ... (snip) ...
                     const imgSuccessActionIndex = view.image_onSuccessAction.getSelectedItemPosition();
-                    if (imgSuccessActionIndex === 2) { 
+                    const ImgSuccessActions = ['click', 'back', 'execute_sequence', 'terminate', 'skip_loop']; // 新数组
+
+                    if (imgSuccessActionIndex === 2) {
+                        // 索引 2: 调用序列
                         if (onDemandSequences.length > 0) {
                             task.onSuccess = { action: 'execute_sequence', sequenceName: onDemandSequences[view.image_onSuccessSequence.getSelectedItemPosition()].id };
                         } else { toast("无法保存：无可用序列供调用"); return; }
+                    } else if (imgSuccessActionIndex === 3) {
+                        // 索引 3: 终止序列
+                        task.onSuccess = { action: 'terminate' };
+                    } else if (imgSuccessActionIndex === 4) {
+                        // 索引 4: 跳过循环
+                        task.onSuccess = { action: 'skip_loop' };
                     } else {
-                        task.onSuccess = { action: imgSuccessActionIndex === 0 ? 'click' : 'back', offsetX: parseInt(view.image_offsetX.getText().toString()) || 0, offsetY: parseInt(view.image_offsetY.getText().toString()) || 0 };
+                        // 索引 0, 1: 点击或返回
+                        task.onSuccess = {
+                            action: ImgSuccessActions[imgSuccessActionIndex],
+                            offsetX: parseInt(view.image_offsetX.getText().toString()) || 0,
+                            offsetY: parseInt(view.image_offsetY.getText().toString()) || 0
+                        };
                     }
-                    const imgFailActionIndex = view.image_onFailAction.getSelectedItemPosition();
-                    if (imgFailActionIndex === 2) { 
-                        if (onDemandSequences.length > 0) {
-                            task.onFail = { action: 'execute_sequence', sequenceName: onDemandSequences[view.image_onFailSequence.getSelectedItemPosition()].id };
-                        } else { toast("无法保存：无可用序列供调用"); return; }
-                    } else {
-                        task.onFail = { action: imgFailActionIndex === 0 ? 'stop' : 'skip' };
-                    }
+                    // ... (snip) ...
                     break;
                 case 'wait_for_dissapear':
                     task.targetType = view.wfd_targetType.getSelectedItemPosition() === 0 ? 'image' : 'ocr';
