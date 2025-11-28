@@ -199,7 +199,7 @@ function reorderByPriority(sequence, triggers) {
 // =================================================================================
 const CONSTANTS = {
     // [新增] 新增图片截图
-    VERSION: "5.2.5 更新超级优先级",
+    VERSION: "5.2.6 修复任务浮窗",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -2486,56 +2486,59 @@ function createSwipeVisuals(task, sequence) {
     visual.endWindow = createMarker(`E${displayIndex + 1}`, task.endX, task.endY, onClick);
     uiRefs.taskVisuals.push(visual);
 }
-// --- V7.4 修复：替换整个函数 ---
 function recreateAllTaskVisuals() {
-    // 1. 先关闭所有的 🎯, S, E 窗口
-    closeTaskVisuals();
+    // 1. 始终先运行在 UI 线程，确保界面操作安全
+    ui.run(() => {
+        // 2. 先关闭旧的浮窗
+        closeTaskVisuals();
 
-    // 2. 检查总开关
-    if (appSettings.taskVisualsHidden === true) {
-        // 【A】开关为 "隐藏"
-        // 那么我们必须也关闭 🌟 和 🔴
-        
-        if (uiRefs.targetView) {
-            uiRefs.targetView.close();
-            uiRefs.targetView = null; // 标记为已关闭
-        }
-        if (uiRefs.redDot) {
-            uiRefs.redDot.close();
-            uiRefs.redDot = null; // 标记为已关闭
-        }
-        return; // 到此为止，全部隐藏
-    }
+        // 3. 检查总开关 (默认为 false/显示)
+        // 注意：这里要做严格的检查，防止 undefined 导致意外
+        const isHidden = appSettings.taskVisualsHidden === true;
 
-    // --- 【B】如果代码运行到这里，说明开关为 "显示" ---
-
-    // 1. 确保 🌟 存在 (如果不存在，就创建它)
-    if (!uiRefs.targetView) {
-        createTargetView(); 
-    }
-
-    // 2. 确保 🔴 存在 (如果不存在，就创建它)
-    if (!uiRefs.redDot) {
-        createRedDot(); 
-    }
-    
-    // --- V7.6 修复：同样需要延迟同步 ---
-    setTimeout(syncRedDotPosition, 100);
-    // --- 修复结束 ---
-
-    // 3. 重新创建所有的 🎯, S, E 窗口 (旧逻辑)
-    const mainSequenceKey = appSettings.mainSequenceKey;
-    const mainSequence = mainSequenceKey ? sequences[mainSequenceKey] : null;
-
-    if (mainSequence && mainSequence.tasks) {
-        mainSequence.tasks.forEach((task) => {
-            if (task.type === 'click') {
-                createTaskWindow(task, mainSequence);
-            } else if (task.type === 'swipe') {
-                createSwipeVisuals(task, mainSequence);
+        if (isHidden) {
+            // 【A】开关为 "隐藏" -> 关闭所有相关浮窗
+            if (uiRefs.targetView) {
+                uiRefs.targetView.close();
+                uiRefs.targetView = null;
             }
-        });
-    }
+            if (uiRefs.redDot) {
+                uiRefs.redDot.close();
+                uiRefs.redDot = null;
+            }
+            return; // 结束
+        }
+
+        // --- 【B】开关为 "显示" -> 创建浮窗 ---
+
+        // 1. 确保 🌟 目标视图存在
+        if (!uiRefs.targetView) {
+            createTargetView();
+        }
+
+        // 2. 确保 🔴 红点存在
+        if (!uiRefs.redDot) {
+            createRedDot();
+        }
+        
+        // 延迟同步红点位置，确保布局已完成
+        setTimeout(syncRedDotPosition, 50);
+
+        // 3. 创建任务序号浮窗 (🎯)
+        const mainSequenceKey = appSettings.mainSequenceKey;
+        const mainSequence = mainSequenceKey ? sequences[mainSequenceKey] : null;
+
+        if (mainSequence && mainSequence.tasks && mainSequence.tasks.length > 0) {
+            mainSequence.tasks.forEach((task) => {
+                // 仅为启用的任务显示浮窗 (可选，这里先全部显示方便调试)
+                if (task.type === 'click') {
+                    createTaskWindow(task, mainSequence);
+                } else if (task.type === 'swipe') {
+                    createSwipeVisuals(task, mainSequence);
+                }
+            });
+        }
+    });
 }
 function highlightTaskVisual(index) {
     // This function needs to be adapted if we want to highlight tasks from different sequences
@@ -2556,8 +2559,6 @@ function addNewTask(task, targetSequence) {
     return task;
 }
 
-// --- 3. 用这个完整函数替换旧的 showAddTaskToMainDialog ---
-
 function showAddTaskToMainDialog() {
     if (isBusy()) return;
 
@@ -2569,11 +2570,14 @@ function showAddTaskToMainDialog() {
         return;
     }
 
-    // A. 定义XML布局 (包含 Switch 开关 和 列表)
+    // A. 定义XML布局
     const view = ui.inflate(
         <vertical>
-            {/* 您的新总开关 */}
-            <Switch id="toggleVisuals" text="显示任务浮窗 (🎯, S, E)" padding="16 8" textSize="16sp" />
+            {/* 总开关：控制所有浮窗的显示/隐藏 */}
+            <horizontal padding="16 8" gravity="center_vertical">
+                <text text="显示任务浮窗 (🎯, S, E)" textSize="16sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" layout_weight="1"/>
+                <Switch id="toggleVisuals" />
+            </horizontal>
 
             <View w="*" h="1dp" bg="{{CONSTANTS.UI.THEME.SECONDARY_CARD}}" />
 
@@ -2588,33 +2592,31 @@ function showAddTaskToMainDialog() {
 
     const dialog = dialogs.build({
         customView: view,
-        title: "添加新步骤到主序列",
-        // 我们不需要 "保存" 或 "完成" 按钮，点击列表项就是操作
+        title: "添加步骤 & 设置",
         negative: "关闭"
     }).show();
 
-    // B. 设置 Switch (总开关) 的逻辑
-    // 检查 "true" 是为了处理旧配置可能没有这个值(undefined)的情况
-    const isChecked = appSettings.taskVisualsHidden !== true;
-    view.toggleVisuals.setChecked(isChecked);
+    // B. 设置 Switch 逻辑
+    // 逻辑：Checked(开) = 显示(Hidden=false) ; Unchecked(关) = 隐藏(Hidden=true)
+    const isCurrentlyShown = appSettings.taskVisualsHidden !== true; 
+    view.toggleVisuals.setChecked(isCurrentlyShown);
 
-    // --- V7.4 修复：替换这个函数 ---
     view.toggleVisuals.setOnCheckedChangeListener((btn, isChecked) => {
-        appSettings.taskVisualsHidden = !isChecked; // isChecked=true 表示 "显示"，所以 hidden=false
-        saveCurrentProfileThrottled(); // 立即保存选择
+        // 更新设置
+        appSettings.taskVisualsHidden = !isChecked; 
+        saveCurrentProfileThrottled(); 
 
-        // 【核心修改】
-        // 无论 "显示" 还是 "隐藏", 都统一调用 "总管" 函数
+        // 立即刷新界面
         recreateAllTaskVisuals();
 
-        if (appSettings.taskVisualsHidden) {
-            toast("所有编辑浮窗已隐藏 (🌟, 🎯)");
+        if (isChecked) {
+            toast("浮窗已开启 (🌟, 🎯)");
         } else {
-            toast("所有编辑浮窗已显示 (🌟, 🎯)");
+            toast("浮窗已隐藏");
         }
     });
 
-    // C. 填充任务列表 (与 showAddTaskDialog 逻辑相同)
+    // C. 填充任务列表 (保持原有逻辑)
     const taskTypes = [
         "[点击] 任务",
         "[滑动] 任务",
@@ -2645,30 +2647,24 @@ function showAddTaskToMainDialog() {
         (cb) => addStopMonitorTask(mainSequence, cb)
     ];
 
-    // D. 为自定义布局动态添加列表项
     taskTypes.forEach((taskName, index) => {
         const itemView = ui.inflate(
-            // 使用卡片样式，点击更舒服
             <card w="*" margin="8 4" cardCornerRadius="8dp" cardElevation="2dp" bg="{{CONSTANTS.UI.THEME.SECONDARY_CARD}}">
-                {/* 1. 【已修复】为 text 标签添加一个 id，并移除 text="{{...}}" */}
                 <text id="task_name_label" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" padding="16 12" bg="?attr/selectableItemBackground" />
             </card>,
             view.taskListContainer, false
         );
 
-        // 2. 【已修复】在 inflate 之后，手动设置文本
         itemView.task_name_label.setText(taskName);
 
-        // (下面的点击逻辑保持不变)
         itemView.click(() => {
             if (actions[index]) {
-                // 执行选中的动作
                 actions[index](() => {
-                    // 添加任务后，自动刷新浮窗 (如果开关是开的)
+                    // 添加完任务后，强制刷新一次浮窗，确保新任务的 🎯 出现
                     recreateAllTaskVisuals();
                 });
             }
-            dialog.dismiss(); // 点击后关闭 "添加任务" 对话框
+            dialog.dismiss();
         });
 
         view.taskListContainer.addView(itemView);
