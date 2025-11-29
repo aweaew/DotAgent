@@ -4820,11 +4820,30 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             }
 
             // Search Area & Padding
+            // Search Area & Padding
             if (['ocr', 'image', 'wait_for_dissapear'].includes(task.type)) {
-                const x1 = view.sa_x1.getText().toString(), y1 = view.sa_y1.getText().toString();
-                const x2 = view.sa_x2.getText().toString(), y2 = view.sa_y2.getText().toString();
-                if (!x1 && !y1 && !x2 && !y2) delete task.search_area;
-                else task.search_area = [parseInt(x1||0), parseInt(y1||0), parseInt(x2||device.width), parseInt(y2||device.height)].sort((a,b)=>a-b);
+                const x1Str = view.sa_x1.getText().toString();
+                const y1Str = view.sa_y1.getText().toString();
+                const x2Str = view.sa_x2.getText().toString();
+                const y2Str = view.sa_y2.getText().toString();
+                
+                // 只有当至少有一个框填写了内容时才保存
+                if (x1Str || y1Str || x2Str || y2Str) {
+                    const vx1 = parseInt(x1Str || "0");
+                    const vy1 = parseInt(y1Str || "0");
+                    const vx2 = parseInt(x2Str || String(device.width));
+                    const vy2 = parseInt(y2Str || String(device.height));
+                    
+                    // ✅ 修复：正确计算左上角和右下角，不混淆X和Y
+                    task.search_area = [
+                        Math.min(vx1, vx2), // Left
+                        Math.min(vy1, vy2), // Top
+                        Math.max(vx1, vx2), // Right
+                        Math.max(vy1, vy2)  // Bottom
+                    ];
+                } else {
+                    delete task.search_area;
+                }
             }
             if (['ocr', 'image'].includes(task.type)) {
                 const pt = view.cache_padding_input.getText().toString();
