@@ -199,7 +199,7 @@ function reorderByPriority(sequence, triggers) {
 // =================================================================================
 const CONSTANTS = {
     // [新增] 新增图片截图
-    VERSION: "5.2.6 修复任务浮窗",
+    VERSION: "5.2.7 锁屏权限重启版",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -5610,15 +5610,36 @@ function resetToDefaultProfile() {
     saveCurrentProfileThrottled();
     logToScreen("已重置为默认方案。");
 }
+// =================================================================================
+// 方案与权限管理 (Profile & Permission Manager) - 已修改
+// =================================================================================
 function showProfileManager() {
     if (isBusy()) return;
+
+    // --- 1. 定义新的界面布局 (增加了顶部权限卡片) ---
     const dialogView = ui.inflate(
         <vertical>
-            <ScrollView h="400dp">
+            {/* --- 新增：权限状态与修复区域 --- */}
+            <card w="*" margin="4 4 4 8" cardCornerRadius="8dp" cardElevation="2dp" bg="#F5F5F5">
+                <vertical padding="12">
+                    <horizontal gravity="center_vertical">
+                        <text text="权限状态：" textStyle="bold" textColor="#333333" textSize="14sp"/>
+                        <text id="permStatusText" text="正在检测..." layout_weight="1" textColor="#757575" textSize="12sp"/>
+                    </horizontal>
+                    
+                    <View w="*" h="1dp" bg="#E0E0E0" margin="0 8"/>
+                    
+                    <horizontal>
+                        <button id="repairPermBtn" text="🛠️ 申请/修复截图权限" layout_weight="1" style="Widget.AppCompat.Button.Colored" h="40dp" textSize="13sp"/>
+                    </horizontal>
+                </vertical>
+            </card>
+
+            {/* ---原有列表区域 --- */}
+            <ScrollView h="350dp"> {/* 稍微调小高度给上方留空间 */}
                 <vertical id="sequenceListContainer" />
             </ScrollView>
             
-            {/* 底部只保留返回主窗口按钮 */}
             <horizontal>
                 <button id="showAppBtn" text="返回主窗口" layout_weight="1" style="Widget.AppCompat.Button.Borderless.Colored" />
             </horizontal>
@@ -5629,7 +5650,7 @@ function showProfileManager() {
     if (currentProfileName) {
         displayName = currentProfileName.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', '');
     }
-    const dialogTitle = `方案管理器 (当前: ${displayName})`;
+    const dialogTitle = `方案与权限 (当前: ${displayName})`;
 
     const dialog = dialogs.build({
         customView: dialogView,
@@ -5638,13 +5659,88 @@ function showProfileManager() {
         neutral: "退出脚本"
     }).on("neutral", closeAllAndExit).show();
 
+    // --- 2. 新增：权限检测与修复逻辑 ---
+    
+    // 辅助函数：更新UI状态显示
+    function updatePermissionStatusUI() {
+        ui.run(() => {
+            if(!dialogView.permStatusText) return;
+            dialogView.permStatusText.setText("正在检测...");
+            dialogView.permStatusText.setTextColor(colors.parseColor("#757575"));
+        });
+
+        threads.start(function(){
+            // 检测悬浮窗
+            let floatyOk = floaty.hasPermission();
+            
+            // 检测截图 (尝试截取1x1像素来验证权限是否真的有效)
+            let screenOk = false;
+            try {
+                let img = captureScreen();
+                if(img) {
+                    screenOk = true;
+                    img.recycle();
+                }
+            } catch(e) {}
+
+            ui.run(() => {
+                if(!dialogView.permStatusText) return; // 防止窗口关闭后崩溃
+                
+                let statusStr = "";
+                if(floatyOk) statusStr += "悬浮窗:✅  ";
+                else statusStr += "悬浮窗:❌  ";
+
+                if(screenOk) statusStr += "截图:✅";
+                else statusStr += "截图:❌ (需修复)";
+
+                dialogView.permStatusText.setText(statusStr);
+                
+                // 根据状态改变颜色
+                if(floatyOk && screenOk) {
+                    dialogView.permStatusText.setTextColor(colors.parseColor("#4CAF50")); // 绿色
+                    dialogView.repairPermBtn.setText("✅ 权限正常 (点击强制刷新)");
+                } else {
+                    dialogView.permStatusText.setTextColor(colors.parseColor("#F44336")); // 红色
+                    dialogView.repairPermBtn.setText("🛠️ 点击立即修复权限");
+                }
+            });
+        });
+    }
+
+    // 绑定修复按钮点击事件
+    dialogView.repairPermBtn.click(() => {
+        // 防止重复点击
+        dialogView.repairPermBtn.setEnabled(false);
+        dialogView.repairPermBtn.setText("正在申请...");
+        
+        threads.start(function(){
+            // 核心：请求截图权限
+            let success = requestScreenCapture();
+            
+            ui.run(() => {
+                dialogView.repairPermBtn.setEnabled(true);
+                if(success) {
+                    toast("申请成功！");
+                } else {
+                    toast("申请被取消或失败");
+                }
+                // 重新检测并刷新显示
+                updatePermissionStatusUI();
+            });
+        });
+    });
+
+    // 窗口打开时自动检测一次
+    updatePermissionStatusUI();
+
+    // --- 3. 原有列表逻辑 (保持不变) ---
     function populateSequenceList(container) {
         ui.run(() => {
             container.removeAllViews();
             
             const profiles = files.listDir(CONSTANTS.FILES.CONFIG_DIR).filter(name => name.startsWith(CONSTANTS.FILES.PROFILE_PREFIX) && name.endsWith('.json'));
 
-            // 1. 【MRU 核心逻辑】: 获取时间戳并排序
+            // MRU 排序逻辑
             const sortedProfiles = profiles.map(name => {
                 const timestamp = metaConfig.profileTimestamps[name] || 0;
                 return { name, timestamp };
@@ -5655,12 +5751,10 @@ function showProfileManager() {
             })
             .map(p => p.name);
 
-            // 2. 创建显示名称列表 (包含操作选项)
             const displayNames = sortedProfiles.map(name => name.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', ''));
             displayNames.unshift("【创建新方案】");
             displayNames.push("【关闭】");
 
-            // 3. 遍历排序后的列表来创建视图
             sortedProfiles.forEach((key, index) => { 
                 const displayName = displayNames[index + 1]; 
                 
@@ -5678,7 +5772,6 @@ function showProfileManager() {
                 itemView.seqName.setText(displayName);
 
                 itemView.click(() => {
-                    // Load action logic
                     if (loadProfile(key)) { 
                         saveCurrentProfileThrottled(); 
                         refreshAllUI(); 
@@ -5693,7 +5786,6 @@ function showProfileManager() {
                     }
                 });
 
-                // Long click: Shows options (Load, Save As, Delete)
                 itemView.longClick(() => {
                     const profileName = displayName;
                     let actions = ["加载", "另存为...", "删除"];
@@ -5764,25 +5856,12 @@ function showProfileManager() {
         });
     }
 
-    // 【只保留 showAppBtn 的处理逻辑】
-    // 逻辑被修改为处理“创建新方案”的点击，即原来的 index 0
-    // V3: 列表中的第一个项目是“创建新方案”。这里处理列表外的按钮逻辑。
-    // 由于 XML 中只剩下一个按钮，我们只处理这个按钮的点击。
-    
-    // 【核心修复】：将 click 事件绑定到 '创建新方案' 的逻辑上 (因为列表项 0 就是创建新方案)
-    // 但在 list view 中，第 0 项是 Create New Profile. 我们在这里处理
-    
     dialogView.showAppBtn.click(() => {
         app.launch(context.getPackageName()); 
         toast("正在显示主窗口...");
         dialog.dismiss();
     });
 
-    // 这里处理“创建新方案”的逻辑，用户需要点击列表中的第一个元素
-    // 但如果用户点击的是“主窗口”按钮，则执行上述逻辑。
-    
-    // 为了兼容性，我们保留原来处理 list item 0 (创建新方案) 的逻辑，以便用户点击列表第一项时触发
-    
     populateSequenceList(dialogView.sequenceListContainer);
 }
 function displayConfigInEditor() { if (!ui.configEditor) return; const config = { version: CONSTANTS.VERSION, settings: appSettings, sequences: sequences }; ui.run(() => { ui.configEditor.setText(JSON.stringify(config, null, 2)); }); }
