@@ -199,7 +199,7 @@ function reorderByPriority(sequence, triggers) {
 // =================================================================================
 const CONSTANTS = {
     // [新增] 新增图片截图
-    VERSION: "5.2.7 锁屏权限重启版",
+    VERSION: "5.2.8 图片重命名或删除",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -5027,34 +5027,27 @@ function cleanupTempCropFile() {
         console.log("已清理旧的裁剪文件。");
     }
 }
-// (下面是 showImageSelectorDialog 函数...)
-// --- 5.1.2 (v3 最终版): 图片文件选择器 (集成新建功能) ---
+// =================================================================================
+// 图片选择器 (V3: 支持预览/重命名/删除)
+// =================================================================================
 function showImageSelectorDialog(onImageSelected) {
     let imageDir = CONSTANTS.FILES.IMAGE_DIR;
     
     if (!files.exists(imageDir)) {
         files.ensureDir(imageDir);
         toast("图片目录 'images' 不存在，已自动创建。");
-        // 即使目录不存在，也允许用户 "新建"
     }
 
-    let imageFiles = files.listDir(imageDir, (name) => {
-        name = name.toLowerCase();
-        return name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg");
-    });
-    imageFiles.sort();
-
-    // 1. 在XML中移除 h="400dp"
+    // 1. 创建 UI 框架
     const view = ui.inflate(
-        // 【新】用一个 FrameLayout 包裹，允许列表滚动
         <FrameLayout>
             <ScrollView> 
-                <vertical id="image_list_container" />
+                <vertical id="image_list_container" padding="5"/>
             </ScrollView>
         </FrameLayout>, null, false
     );
 
-    // 2. 用JS手动设置高度
+    // 2. 动态设置高度
     let heightInPixels = Math.round(400 * device.density); 
     let layoutParams = new android.widget.FrameLayout.LayoutParams(
         android.view.ViewGroup.LayoutParams.MATCH_PARENT, 
@@ -5062,35 +5055,118 @@ function showImageSelectorDialog(onImageSelected) {
     );
     view.setLayoutParams(layoutParams);
 
-    // 3. 创建弹窗
     const dialog = dialogs.build({
         customView: view,
         title: "请选择图片文件",
         negative: "取消"
     }).show();
-    // 5. 动态地将 "已存在" 的文件名填充到列表
-    imageFiles.forEach(fileName => {
-        const itemView = ui.inflate(
-            <card w="*" margin="8 4" cardCornerRadius="8dp" cardElevation="2dp" bg="{{CONSTANTS.UI.THEME.SECONDARY_CARD}}">
-                <text id="image_name_label" 
-                    textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" 
-                    padding="16 12" 
-                    bg="?attr/selectableItemBackground" 
-                    w="*"
-                    />
-            </card>, 
-            view.image_list_container, false
-        );
 
-        itemView.image_name_label.setText(fileName);
-        
-        itemView.click(() => {
-            onImageSelected(fileName); 
-            dialog.dismiss();
+    // 3. 封装列表刷新逻辑
+    function refreshImageList() {
+        ui.run(() => {
+            view.image_list_container.removeAllViews();
+            
+            let imageFiles = files.listDir(imageDir, (name) => {
+                name = name.toLowerCase();
+                return name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg");
+            });
+            
+            if (!imageFiles || imageFiles.length === 0) {
+                 view.image_list_container.addView(ui.inflate(<text text="暂无图片，请点击主界面“新建”" gravity="center" padding="20" textColor="#999999"/>, null, false));
+                 return;
+            }
+
+            imageFiles.sort();
+
+            imageFiles.forEach(fileName => {
+                const itemView = ui.inflate(
+                    <card w="*" margin="4 2" cardCornerRadius="6dp" cardElevation="2dp" bg="{{CONSTANTS.UI.THEME.SECONDARY_CARD}}">
+                        <horizontal w="*" gravity="center_vertical" padding="12 8" bg="?attr/selectableItemBackground">
+                            <text id="image_icon" text="🖼️" textSize="16sp" marginRight="8"/>
+                            <text id="image_name_label" 
+                                textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" 
+                                textSize="14sp"
+                                layout_weight="1"
+                                />
+                             <text text="⋮" textColor="#888888" textSize="16sp" padding="4"/>
+                        </horizontal>
+                    </card>, 
+                    view.image_list_container, false
+                );
+
+                itemView.image_name_label.setText(fileName);
+                
+                // --- 点击：选择图片 ---
+                itemView.click(() => {
+                    onImageSelected(fileName); 
+                    dialog.dismiss();
+                });
+                
+                // --- 长按：弹出管理菜单 ---
+                itemView.longClick(() => {
+                    // 新增了 "预览" 选项
+                    const options = ["👁️ 预览 (Preview)", "✏️ 重命名 (Rename)", "🗑️ 删除 (Delete)", "取消"];
+                    
+                    dialogs.select(`操作: ${fileName}`, options).then(i => {
+                        if (i < 0 || i === 3) return; // 取消
+                        
+                        const fullPath = files.join(imageDir, fileName);
+
+                        if (i === 0) { // 预览
+                            try {
+                                // 核心逻辑：调用系统查看器打开文件
+                                app.viewFile(fullPath);
+                            } catch (e) {
+                                toast("无法打开预览，请检查是否有相册应用");
+                            }
+                        } 
+                        else if (i === 1) { // 重命名
+                            dialogs.rawInput("请输入新文件名", fileName).then(newName => {
+                                if (!newName) return;
+                                newName = newName.trim();
+                                if (newName === fileName) return;
+                                
+                                if (!newName.toLowerCase().match(/\.(png|jpg|jpeg)$/)) {
+                                    const ext = fileName.substring(fileName.lastIndexOf("."));
+                                    newName += ext;
+                                }
+
+                                const newPath = files.join(imageDir, newName);
+                                if (files.exists(newPath)) {
+                                    toast("文件名已存在！");
+                                    return;
+                                }
+
+                                if (files.rename(fullPath, newName)) {
+                                    toast("重命名成功");
+                                    refreshImageList(); 
+                                } else {
+                                    toast("重命名失败");
+                                }
+                            });
+                        } 
+                        else if (i === 2) { // 删除
+                            dialogs.confirm("确认删除?", `将永久删除图片:\n${fileName}`).then(ok => {
+                                if (ok) {
+                                    if (files.remove(fullPath)) {
+                                        toast("已删除");
+                                        refreshImageList(); 
+                                    } else {
+                                        toast("删除失败");
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    return true; 
+                });
+                
+                view.image_list_container.addView(itemView);
+            });
         });
-        
-        view.image_list_container.addView(itemView);
-    });
+    }
+
+    refreshImageList();
 }
 function showHelpDialog() {
     dialogs.build({ title: "帮助与说明", content: `【核心概念】\n1. 序列 (Sequence): 所有自动化流程的单元。每个序列都有自己的任务步骤和执行策略。\n\n2. 主序列 (⭐): 在序列管理器中长按指定，点击 ▶️ 按钮时运行的序列。\n\n3. 主监控 (🧿): 同样长按指定，是点击 👁️ 按钮时运行的后台监控序列。\n\n4. 执行策略: 定义序列如何运行。\n   - 序列: 作为主任务或子任务执行，可设置循环次数。\n   - 监控: 在后台持续运行，根据触发器（如找图）执行相应动作。`, positive: "我明白了" }).show();
