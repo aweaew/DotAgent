@@ -25,22 +25,30 @@ function saveCurrentProfileThrottled(delayMs) {
     }, d);
 }
 
-// === PriorityQueue quick-persist helpers ===
-// 存储路径（Auto.js 常用可写目录）；你也可以改成其他路径
+// =================================================================================
+// 优先队列持久化 (PriorityQueue Persistence) - 已修复方案隔离
+// =================================================================================
+
+// 存储路径
 const __PQ_STORE_PATH = "/sdcard/dotagent_priority_queue.json";
 
-// Write priorityQueue for a given sequence to a small JSON file (atomic)
+// 1. 写入函数：增加 profileName 字段
 function writePriorityQueueQuick(sequence) {
     try {
         if (!sequence || !sequence.name) return;
+        
+        // 获取当前方案名，如果没有则用 "default"
+        var curProfile = (typeof currentProfileName !== 'undefined' && currentProfileName) ? currentProfileName : "default";
+
         var obj = {
+            profileName: curProfile, // <--- 核心修复：绑定当前方案
             sequenceName: sequence.name,
             ts: Date.now(),
             priorityQueue: Array.isArray(sequence.priorityQueue) ? sequence.priorityQueue : []
         };
+        
         var tmp = __PQ_STORE_PATH + ".tmp";
-        files.write(tmp, JSON.stringify(obj)); // write temp
-        // move/rename to final (atomic-ish)
+        files.write(tmp, JSON.stringify(obj)); 
         try { files.remove(__PQ_STORE_PATH); } catch(e){}
         files.rename(tmp, __PQ_STORE_PATH);
     } catch (e) {
@@ -48,7 +56,7 @@ function writePriorityQueueQuick(sequence) {
     }
 }
 
-// Read persisted priorityQueue if newer than last loaded time, return object or null
+// 2. 读取函数：增加 profileName 校验
 var __PQ_lastLoadMtime = 0;
 function tryLoadPriorityQueueQuickIfNewer(sequence) {
     try {
@@ -56,14 +64,33 @@ function tryLoadPriorityQueueQuickIfNewer(sequence) {
         var stat = files.stat(__PQ_STORE_PATH);
         var mtime = stat.mtime || +stat.lastModifiedDate || Date.now();
         if (!mtime) mtime = Date.now();
+        
+        // 如果文件没更新，就不读
         if (mtime <= (__PQ_lastLoadMtime || 0)) {
             return null;
         }
+        
         var txt = files.read(__PQ_STORE_PATH);
         if (!txt) return null;
         var obj = JSON.parse(txt);
-        // optional: ensure it belongs to this sequence by name
+        
         if (!obj || !obj.priorityQueue) return null;
+
+        // <--- 核心修复：校验方案名是否匹配 ---
+        var curProfile = (typeof currentProfileName !== 'undefined' && currentProfileName) ? currentProfileName : "default";
+        
+        // 如果文件里的方案名和当前运行的方案名不一致，直接忽略！
+        // 这样就防止了方案A读取到方案B的缓存
+        if (obj.profileName !== curProfile) {
+            return null; 
+        }
+
+        // 双重保险：校验序列名
+        if (obj.sequenceName !== sequence.name) {
+            return null;
+        }
+        // --- 修复结束 ---
+
         __PQ_lastLoadMtime = mtime;
         return obj;
     } catch (e) {
@@ -199,7 +226,7 @@ function reorderByPriority(sequence, triggers) {
 // =================================================================================
 const CONSTANTS = {
     // [新增] 新增图片截图
-    VERSION: "5.2.8 图片重命名或删除",
+    VERSION: "5.3.0 优先队列污染。方案加载修复",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -5687,98 +5714,159 @@ function resetToDefaultProfile() {
     logToScreen("已重置为默认方案。");
 }
 // =================================================================================
-// 方案与权限管理 (Profile & Permission Manager) - 已修改
+// 方案与权限管理 (V5: 修复Spinner越界崩溃 + 动态适配器)
 // =================================================================================
 function showProfileManager() {
     if (isBusy()) return;
 
-    // --- 1. 定义新的界面布局 (增加了顶部权限卡片) ---
+    // --- A. 准备数据 ---
+    const allSequences = Object.entries(sequences).map(([key, seq]) => ({ 
+        id: key, 
+        name: seq.name || key,
+        isMonitor: seq.executionPolicy && seq.executionPolicy.mode === 'monitor'
+    }));
+    
+    // 分类
+    const normalSeqOptions = allSequences.filter(s => !s.isMonitor);
+    const monitorSeqOptions = allSequences.filter(s => s.isMonitor);
+
+    // 添加 "无" 选项 (确保列表至少有一个元素)
+    normalSeqOptions.unshift({ id: null, name: "(无主序列)" });
+    monitorSeqOptions.unshift({ id: null, name: "(无主监控)" });
+
+    // 提取纯名称数组 (用于显示)
+    const normalSeqNames = normalSeqOptions.map(s => s.name);
+    const monitorSeqNames = monitorSeqOptions.map(s => s.name);
+
+    // 计算索引 (增加安全边界检查)
+    let currentMainSeqIndex = normalSeqOptions.findIndex(s => s.id === appSettings.mainSequenceKey);
+    if (currentMainSeqIndex === -1) currentMainSeqIndex = 0;
+    if (currentMainSeqIndex >= normalSeqNames.length) currentMainSeqIndex = 0; // 安全检查
+
+    let currentMainMonIndex = monitorSeqOptions.findIndex(s => s.id === appSettings.mainMonitorKey);
+    if (currentMainMonIndex === -1) currentMainMonIndex = 0;
+    if (currentMainMonIndex >= monitorSeqNames.length) currentMainMonIndex = 0; // 安全检查
+
+
+    // --- B. 定义界面布局 (移除 entries 属性) ---
     const dialogView = ui.inflate(
         <vertical>
-            {/* --- 新增：权限状态与修复区域 --- */}
-            <card w="*" margin="4 4 4 8" cardCornerRadius="8dp" cardElevation="2dp" bg="#F5F5F5">
-                <vertical padding="12">
+            {/* 1. 权限状态卡片 */}
+            <card w="*" margin="4 4 4 4" cardCornerRadius="8dp" cardElevation="2dp" bg="#F5F5F5">
+                <vertical padding="10">
                     <horizontal gravity="center_vertical">
-                        <text text="权限状态：" textStyle="bold" textColor="#333333" textSize="14sp"/>
-                        <text id="permStatusText" text="正在检测..." layout_weight="1" textColor="#757575" textSize="12sp"/>
-                    </horizontal>
-                    
-                    <View w="*" h="1dp" bg="#E0E0E0" margin="0 8"/>
-                    
-                    <horizontal>
-                        <button id="repairPermBtn" text="🛠️ 申请/修复截图权限" layout_weight="1" style="Widget.AppCompat.Button.Colored" h="40dp" textSize="13sp"/>
+                        <text text="权限状态：" textStyle="bold" textColor="#333333" textSize="12sp"/>
+                        <text id="permStatusText" text="检测中..." layout_weight="1" textColor="#757575" textSize="12sp"/>
+                        <button id="repairPermBtn" text="🛠️ 修复" style="Widget.AppCompat.Button.Colored" h="35dp" textSize="12sp"/>
                     </horizontal>
                 </vertical>
             </card>
 
-            {/* ---原有列表区域 --- */}
-            <ScrollView h="350dp"> {/* 稍微调小高度给上方留空间 */}
+            {/* 2. 快速设置卡片 */}
+            <card w="*" margin="4 0 4 8" cardCornerRadius="8dp" cardElevation="2dp" bg="#E3F2FD">
+                <vertical padding="10">
+                    <text text="⚡ 快速设置 (主任务/主监控)" textStyle="bold" textColor="#1565C0" textSize="12sp" marginBottom="5"/>
+                    
+                    <horizontal gravity="center_vertical">
+                        <text text="⭐ 主序列:" w="60dp" textColor="#333333" textSize="12sp"/>
+                        {/* 移除 entries 属性，改用代码设置 */}
+                        <spinner id="mainSeqSpinner" layout_weight="1" />
+                    </horizontal>
+                    
+                    <horizontal gravity="center_vertical" marginTop="-5">
+                        <text text="🧿 主监控:" w="60dp" textColor="#333333" textSize="12sp"/>
+                        {/* 移除 entries 属性，改用代码设置 */}
+                        <spinner id="mainMonSpinner" layout_weight="1" />
+                    </horizontal>
+                </vertical>
+            </card>
+
+            {/* 3. 方案列表区域 */}
+            <text text="📂 方案列表 (长按管理)" textSize="12sp" textColor="#757575" marginLeft="8"/>
+            <ScrollView h="300dp"> 
                 <vertical id="sequenceListContainer" />
             </ScrollView>
             
+            {/* 4. 底部按钮 */}
             <horizontal>
                 <button id="showAppBtn" text="返回主窗口" layout_weight="1" style="Widget.AppCompat.Button.Borderless.Colored" />
             </horizontal>
         </vertical>, null, false);
 
-    // 清理当前方案名称，用于显示
+    // --- 核心修复：使用 ArrayAdapter 设置数据 (防止 XML 解析错误) ---
+    // 这种方式支持包含特殊字符的名称，且绝对保证 View 和 Data 的长度一致
+    const seqAdapter = new android.widget.ArrayAdapter(context, android.R.layout.simple_spinner_item, normalSeqNames);
+    seqAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+    dialogView.mainSeqSpinner.setAdapter(seqAdapter);
+
+    const monAdapter = new android.widget.ArrayAdapter(context, android.R.layout.simple_spinner_item, monitorSeqNames);
+    monAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+    dialogView.mainMonSpinner.setAdapter(monAdapter);
+
+    // 设置选中项 (必须在 setAdapter 之后)
+    dialogView.mainSeqSpinner.setSelection(currentMainSeqIndex);
+    dialogView.mainMonSpinner.setSelection(currentMainMonIndex);
+
+
+    // 标题显示当前方案名
     let displayName = "未知";
     if (currentProfileName) {
         displayName = currentProfileName.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', '');
     }
-    const dialogTitle = `方案与权限 (当前: ${displayName})`;
-
+    
     const dialog = dialogs.build({
         customView: dialogView,
-        title: dialogTitle,
+        title: `方案与设置 (当前: ${displayName})`,
         positive: "关闭",
         neutral: "退出脚本"
     }).on("neutral", closeAllAndExit).show();
 
-    // --- 2. 新增：权限检测与修复逻辑 ---
-    
-    // 辅助函数：更新UI状态显示
-    function updatePermissionStatusUI() {
-        ui.run(() => {
-            if(!dialogView.permStatusText) return;
-            dialogView.permStatusText.setText("正在检测...");
-            dialogView.permStatusText.setTextColor(colors.parseColor("#757575"));
-        });
 
+    // --- C. 绑定逻辑: 快速设置 ---
+    dialogView.mainSeqSpinner.setOnItemSelectedListener({
+        onItemSelected: (parent, view, position, id) => {
+            // 安全检查防止越界
+            if (position >= 0 && position < normalSeqOptions.length) {
+                const selectedId = normalSeqOptions[position].id;
+                if (selectedId !== appSettings.mainSequenceKey) {
+                    appSettings.mainSequenceKey = selectedId;
+                    saveCurrentProfileThrottled();
+                    if (appState.isFloatyCreated) recreateAllTaskVisuals();
+                    toast(`主序列已更新`);
+                }
+            }
+        }
+    });
+
+    dialogView.mainMonSpinner.setOnItemSelectedListener({
+        onItemSelected: (parent, view, position, id) => {
+             if (position >= 0 && position < monitorSeqOptions.length) {
+                const selectedId = monitorSeqOptions[position].id;
+                if (selectedId !== appSettings.mainMonitorKey) {
+                    appSettings.mainMonitorKey = selectedId;
+                    saveCurrentProfileThrottled();
+                    toast(`主监控已更新`);
+                }
+             }
+        }
+    });
+
+
+    // --- D. 绑定逻辑: 权限检测与修复 ---
+    function updatePermissionStatusUI() {
         threads.start(function(){
-            // 检测悬浮窗
             let floatyOk = floaty.hasPermission();
-            
-            // 检测截图 (尝试截取1x1像素来验证权限是否真的有效)
             let screenOk = false;
             try {
                 let img = captureScreen();
-                if(img) {
-                    screenOk = true;
-                    img.recycle();
-                }
+                if(img) { screenOk = true; img.recycle(); }
             } catch(e) {}
 
             ui.run(() => {
-                if(!dialogView.permStatusText) return; // 防止窗口关闭后崩溃
-                
-                let statusStr = "";
-                if(floatyOk) statusStr += "悬浮窗:✅  ";
-                else statusStr += "悬浮窗:❌  ";
-
-                if(screenOk) statusStr += "截图:✅";
-                else statusStr += "截图:❌ (需修复)";
-
+                if(!dialogView.permStatusText) return;
+                let statusStr = (floatyOk ? "窗✅ " : "窗❌ ") + (screenOk ? "图✅" : "图❌");
                 dialogView.permStatusText.setText(statusStr);
-                
-                // 根据状态改变颜色
-                if(floatyOk && screenOk) {
-                    dialogView.permStatusText.setTextColor(colors.parseColor("#4CAF50")); // 绿色
-                    dialogView.repairPermBtn.setText("✅ 权限正常 (点击强制刷新)");
-                } else {
-                    dialogView.permStatusText.setTextColor(colors.parseColor("#F44336")); // 红色
-                    dialogView.repairPermBtn.setText("🛠️ 点击立即修复权限");
-                }
+                dialogView.permStatusText.setTextColor(colors.parseColor((floatyOk && screenOk) ? "#4CAF50" : "#F44336"));
             });
         });
     }
@@ -5787,59 +5875,95 @@ function showProfileManager() {
     dialogView.repairPermBtn.click(() => {
         // 防止重复点击
         dialogView.repairPermBtn.setEnabled(false);
-        dialogView.repairPermBtn.setText("正在申请...");
+        dialogView.repairPermBtn.setText("正在唤起...");
         
         threads.start(function(){
-            // 核心：请求截图权限
-            let success = requestScreenCapture();
+            // --- 核心修复开始 ---
+            // 1. 强制拉起主界面到前台
+            // (Android 10+ 必须在前台才能申请录屏权限，否则会被系统拦截不弹窗)
+            app.launch(context.getPackageName());
             
+            // 2. 稍微等待一下，确保界面已经浮现
+            sleep(500); 
+            
+            // 3. 再请求权限 (此时应用在前台，弹窗会立即出现)
+            // 注意：requestScreenCapture 是阻塞的，直到用户点击允许/取消
+            let success = requestScreenCapture();
+            // --- 核心修复结束 ---
+
             ui.run(() => {
                 dialogView.repairPermBtn.setEnabled(true);
+                dialogView.repairPermBtn.setText("🛠️ 修复");
+                
                 if(success) {
-                    toast("申请成功！");
+                    toast("✅ 截图权限已修复！");
                 } else {
-                    toast("申请被取消或失败");
+                    toast("⚠️ 权限申请被取消");
                 }
+                
                 // 重新检测并刷新显示
                 updatePermissionStatusUI();
             });
         });
     });
 
-    // 窗口打开时自动检测一次
     updatePermissionStatusUI();
 
-    // --- 3. 原有列表逻辑 (保持不变) ---
-    function populateSequenceList(container) {
+
+    // --- E. 绑定逻辑: 方案列表 (含完整长按菜单) ---
+    function populateSequenceListRefined(container) {
         ui.run(() => {
             container.removeAllViews();
             
-            const profiles = files.listDir(CONSTANTS.FILES.CONFIG_DIR).filter(name => name.startsWith(CONSTANTS.FILES.PROFILE_PREFIX) && name.endsWith('.json'));
+            // 1. 添加 "新建方案" 按钮
+            const newProfileView = ui.inflate(
+                <card w="*" margin="8 4" cardCornerRadius="8dp" cardElevation="2dp" bg="#E8F5E9"> 
+                    <horizontal w="*" gravity="center_vertical" padding="16 12">
+                        <text text="➕" textSize="18sp" marginRight="12" />
+                        <text text="【创建新方案】" layout_weight="1" textColor="#2E7D32" textStyle="bold"/>
+                    </horizontal>
+                </card>, container, false);
+            
+            newProfileView.click(() => {
+                dialogs.rawInput("输入新方案名称", "my_profile").then(name => {
+                    if (!name) return;
+                    const newFileName = CONSTANTS.FILES.PROFILE_PREFIX + name.trim() + ".json";
+                    const newPath = files.join(CONSTANTS.FILES.CONFIG_DIR, newFileName);
+                    if (files.exists(newPath)) { toast("方案已存在"); return; }
+                    
+                    const emptyProfile = { version: CONSTANTS.VERSION, settings: DEFAULT_SETTINGS, sequences: {} };
+                    files.write(newPath, JSON.stringify(emptyProfile, null, 2));
+                    
+                    loadProfile(newFileName);
+                    saveCurrentProfileThrottled();
+                    refreshAllUI();
+                    dialog.dismiss();
+                    toast(`新方案 "${name}" 已创建`);
+                });
+            });
+            container.addView(newProfileView);
 
-            // MRU 排序逻辑
+            // 2. 遍历现有方案
+            const profiles = files.listDir(CONSTANTS.FILES.CONFIG_DIR)
+                .filter(name => name.startsWith(CONSTANTS.FILES.PROFILE_PREFIX) && name.endsWith('.json'));
+
             const sortedProfiles = profiles.map(name => {
                 const timestamp = metaConfig.profileTimestamps[name] || 0;
                 return { name, timestamp };
-            })
-            .sort((a, b) => {
+            }).sort((a, b) => {
                 if (b.timestamp !== a.timestamp) return b.timestamp - a.timestamp;
                 return a.name.localeCompare(b.name);
-            })
-            .map(p => p.name);
+            });
 
-            const displayNames = sortedProfiles.map(name => name.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', ''));
-            displayNames.unshift("【创建新方案】");
-            displayNames.push("【关闭】");
-
-            sortedProfiles.forEach((key, index) => { 
-                const displayName = displayNames[index + 1]; 
+            sortedProfiles.forEach((item) => { 
+                const key = item.name;
+                const displayName = key.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', '');
                 
                 const itemView = ui.inflate(
                     <card w="*" margin="8 4" cardCornerRadius="8dp" cardElevation="2dp" bg="{{CONSTANTS.UI.THEME.SECONDARY_CARD}}">
                         <horizontal w="*" gravity="center_vertical" padding="16 12">
                             <text id="seqIcon" textSize="18sp" marginRight="12" />
                             <text id="seqName" layout_weight="1" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" ellipsize="end" maxLines="1" />
-                            <text text=">" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" />
                         </horizontal>
                     </card>, container, false);
 
@@ -5851,80 +5975,40 @@ function showProfileManager() {
                     if (loadProfile(key)) { 
                         saveCurrentProfileThrottled(); 
                         refreshAllUI(); 
-                        if (ui.sequenceEditorView && ui.sequenceEditorView.getChildCount() > 0) {
-                            ui.run(() => {
-                                ui.sequenceEditorView.removeAllViews();
-                                renderSequenceListEditor();
-                            });
-                        }
                         dialog.dismiss();
-                        toast(`方案 "${displayName}" 加载成功`); 
+                        toast(`已加载: ${displayName}`); 
                     }
                 });
 
                 itemView.longClick(() => {
-                    const profileName = displayName;
-                    let actions = ["加载", "另存为...", "删除"];
-                    if (key === CONSTANTS.FILES.PROFILE_PREFIX + "default.json") {
-                        actions.pop();
-                    }
-                    dialogs.select(`操作: [${profileName}]`, actions)
-                        .then(actionIndex => {
-                            if (actionIndex < 0) return;
-                            switch (actions[actionIndex]) {
-                                case "加载":
-                                    if (loadProfile(key)) { 
-                                        saveCurrentProfileThrottled(); 
-                                        refreshAllUI(); 
-                                        if (ui.sequenceEditorView && ui.sequenceEditorView.getChildCount() > 0) {
-                                            ui.run(() => {
-                                                ui.sequenceEditorView.removeAllViews();
-                                                renderSequenceListEditor();
-                                            });
-                                        }
-                                        populateSequenceList(container); 
-                                        toast(`方案 "${displayName}" 加载成功`); 
-                                    }
-                                    break;
-                                case "另存为...":
-                                    dialogs.rawInput("输入新方案的名称", `${profileName}_copy`).then(newName => {
-                                        newName = newName.trim();
-                                        if (!newName || newName.includes('/') || newName.includes('\\') || newName === 'default') { toast("名称不合法!"); return; }
-                                        const newProfileName = CONSTANTS.FILES.PROFILE_PREFIX + newName + ".json";
-                                        const newProfilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, newProfileName);
-                                        if (files.exists(newProfilePath)) { toast("错误：同名方案已存在！"); return; }
-                                        const sourceProfilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, key);
-                                        if (files.copy(sourceProfilePath, newProfilePath)) {
-                                            currentProfileName = newProfileName;
-                                            loadProfile(currentProfileName);
-                                            saveCurrentProfileThrottled();
-                                            refreshAllUI();
-                                            populateSequenceList(container); 
-                                            toast(`方案已另存为 "${newName}" 并加载！`);
-                                        } else {
-                                            toast("另存为失败！无法复制文件。");
-                                        }
-                                    });
-                                    break;
-                                case "删除":
-                                    dialogs.confirm("确定删除?", `将永久删除方案: "${displayName}"`).then(ok => {
-                                        if (ok) {
-                                            const profilePath = files.join(CONSTANTS.FILES.CONFIG_DIR, key);
-                                            if (files.remove(profilePath)) {
-                                                if (currentProfileName === key) {
-                                                    resetToDefaultProfile();
-                                                    refreshAllUI();
-                                                }
-                                                populateSequenceList(container); 
-                                                toast("删除成功");
-                                            } else {
-                                                toast("删除失败");
-                                            }
-                                        }
-                                    });
-                                    break;
-                            }
-                        });
+                    const actions = ["另存为...", "删除"];
+                    if (key === CONSTANTS.FILES.PROFILE_PREFIX + "default.json") actions.pop();
+                    
+                    dialogs.select(`操作: ${displayName}`, actions).then(i => {
+                        if (i < 0) return;
+                        if (actions[i] === "另存为...") {
+                            dialogs.rawInput("另存为", `${displayName}_copy`).then(newName => {
+                                if(!newName) return;
+                                const newPath = files.join(CONSTANTS.FILES.CONFIG_DIR, CONSTANTS.FILES.PROFILE_PREFIX + newName + ".json");
+                                if(files.exists(newPath)) { toast("已存在"); return; }
+                                files.copy(files.join(CONSTANTS.FILES.CONFIG_DIR, key), newPath);
+                                loadProfile(CONSTANTS.FILES.PROFILE_PREFIX + newName + ".json");
+                                saveCurrentProfileThrottled();
+                                refreshAllUI();
+                                dialog.dismiss();
+                                toast("成功");
+                            });
+                        } else if (actions[i] === "删除") {
+                            dialogs.confirm("确认删除?", displayName).then(ok => {
+                                if(ok) {
+                                    files.remove(files.join(CONSTANTS.FILES.CONFIG_DIR, key));
+                                    if(currentProfileName === key) { resetToDefaultProfile(); refreshAllUI(); }
+                                    populateSequenceListRefined(container);
+                                    toast("已删除");
+                                }
+                            });
+                        }
+                    });
                     return true;
                 });
                 container.addView(itemView);
@@ -5938,7 +6022,7 @@ function showProfileManager() {
         dialog.dismiss();
     });
 
-    populateSequenceList(dialogView.sequenceListContainer);
+    populateSequenceListRefined(dialogView.sequenceListContainer);
 }
 function displayConfigInEditor() { if (!ui.configEditor) return; const config = { version: CONSTANTS.VERSION, settings: appSettings, sequences: sequences }; ui.run(() => { ui.configEditor.setText(JSON.stringify(config, null, 2)); }); }
 function showImportExportDialog() { dialogs.select("导入/导出当前方案", ["导入 (覆盖当前)", "导出"]).then(i => { if (i < 0) return; if (i === 0) { importConfiguration(); } else if (i === 1) { exportConfiguration(); } }); }
