@@ -26,113 +26,137 @@ function saveCurrentProfileThrottled(delayMs) {
 }
 
 // =================================================================================
-// 优先队列持久化 (PriorityQueue Persistence) - 已修复方案隔离
+// 优先队列持久化 (PriorityQueue Persistence) - V3 可见版 (防闪退/防污染)
 // =================================================================================
 
-// 存储路径
-const __PQ_STORE_PATH = "/sdcard/dotagent_priority_queue.json";
+// 【修改点1】将路径改到 Download 目录，方便你查看和调试
+const __PQ_CACHE_DIR = "/sdcard/Download/DotAgent_Cache";
+files.ensureDir(__PQ_CACHE_DIR);
 
-// 1. 写入函数：增加 profileName 字段
+/**
+ * 生成唯一的缓存文件路径
+ * 规则: md5(方案名 + 序列名).json
+ */
+function getPQFilePath(sequence) {
+    var curProfile = (typeof currentProfileName !== 'undefined' && currentProfileName) ? currentProfileName : "default";
+    var seqName = (sequence && sequence.name) ? sequence.name : "unknown";
+    
+    // 简单的字符串哈希
+    var uniqueKey = curProfile + "_" + seqName;
+    var hash = 0;
+    for (var i = 0; i < uniqueKey.length; i++) {
+        hash = ((hash << 5) - hash) + uniqueKey.charCodeAt(i);
+        hash |= 0;
+    }
+    var safeName = "pq_" + Math.abs(hash) + ".json";
+    return files.join(__PQ_CACHE_DIR, safeName);
+}
+
+// 1. 写入函数 (修复版：自动创建目录)
 function writePriorityQueueQuick(sequence) {
     try {
         if (!sequence || !sequence.name) return;
         
-        // 获取当前方案名，如果没有则用 "default"
+        var targetPath = getPQFilePath(sequence);
         var curProfile = (typeof currentProfileName !== 'undefined' && currentProfileName) ? currentProfileName : "default";
 
         var obj = {
-            profileName: curProfile, // <--- 核心修复：绑定当前方案
+            profileName: curProfile,
             sequenceName: sequence.name,
             ts: Date.now(),
             priorityQueue: Array.isArray(sequence.priorityQueue) ? sequence.priorityQueue : []
         };
         
-        var tmp = __PQ_STORE_PATH + ".tmp";
-        files.write(tmp, JSON.stringify(obj)); 
-        try { files.remove(__PQ_STORE_PATH); } catch(e){}
-        files.rename(tmp, __PQ_STORE_PATH);
+        // 【关键修复】确保文件所在的目录存在！
+        // 传入具体的文件路径，它会自动创建 "/sdcard/Download/DotAgent_Cache/" 文件夹
+        files.ensureDir(targetPath); 
+        
+        // 写入文件
+        files.write(targetPath, JSON.stringify(obj));
+        
+        // 调试日志 (确认写入成功)
+        // console.log("💾 已保存: " + files.getName(targetPath));
+        
     } catch (e) {
-        try { logErrorToScreen("[PQ write err] " + e); } catch(e){}
+        if (typeof logErrorToScreen === 'function') {
+            logErrorToScreen("⚠️ 队列保存失败: " + e.message);
+        }
     }
 }
 
-// 2. 读取函数：增加 profileName 校验
-var __PQ_lastLoadMtime = 0;
+// 2. 读取函数
+var __PQ_lastLoadMtimeMap = {}; 
+
 function tryLoadPriorityQueueQuickIfNewer(sequence) {
     try {
-        if (!files.exists(__PQ_STORE_PATH)) return null;
-        var stat = files.stat(__PQ_STORE_PATH);
-        var mtime = stat.mtime || +stat.lastModifiedDate || Date.now();
-        if (!mtime) mtime = Date.now();
+        var targetPath = getPQFilePath(sequence);
         
-        // 如果文件没更新，就不读
-        if (mtime <= (__PQ_lastLoadMtime || 0)) {
-            return null;
+        if (!files.exists(targetPath)) return null;
+        
+        // 检查文件修改时间
+        // 注意：files.stat 在某些手机上可能耗时，如果卡顿可移除此判断
+        var stat = files.stat(targetPath);
+        var mtime = stat.mtime || +stat.lastModifiedDate || Date.now();
+        
+        var lastMtime = __PQ_lastLoadMtimeMap[targetPath] || 0;
+        if (mtime <= lastMtime) {
+            return null; 
         }
         
-        var txt = files.read(__PQ_STORE_PATH);
-        if (!txt) return null;
-        var obj = JSON.parse(txt);
+        var txt = files.read(targetPath);
+        if (!txt || txt.trim().length === 0) return null; 
+        
+        var obj = null;
+        try {
+            obj = JSON.parse(txt);
+        } catch(jsonErr) {
+            return null; 
+        }
         
         if (!obj || !obj.priorityQueue) return null;
 
-        // <--- 核心修复：校验方案名是否匹配 ---
         var curProfile = (typeof currentProfileName !== 'undefined' && currentProfileName) ? currentProfileName : "default";
         
-        // 如果文件里的方案名和当前运行的方案名不一致，直接忽略！
-        // 这样就防止了方案A读取到方案B的缓存
-        if (obj.profileName !== curProfile) {
-            return null; 
-        }
+        if (obj.profileName !== curProfile) return null; 
+        if (obj.sequenceName !== sequence.name) return null;
 
-        // 双重保险：校验序列名
-        if (obj.sequenceName !== sequence.name) {
-            return null;
-        }
-        // --- 修复结束 ---
-
-        __PQ_lastLoadMtime = mtime;
+        __PQ_lastLoadMtimeMap[targetPath] = mtime;
+        
         return obj;
     } catch (e) {
-        try { logErrorToScreen("[PQ load err] " + e); } catch(e){}
         return null;
     }
 }
 
 function cleanupPriorityQueue(sequence){
     try{
+        if(!sequence.triggers) return;
         const ids = new Set(((sequence.triggers)||[]).map(getTriggerId));
         sequence.priorityQueue = (sequence.priorityQueue && Array.isArray(sequence.priorityQueue)) ? sequence.priorityQueue.filter(id => ids.has(id)) : [];
     }catch(e){}
 }
-// --- end helpers ---
-// 1) getTriggerId 增强调试（放在函数体起始处）
+
+// 1) getTriggerId 
 function getTriggerId(trigger) {
     try {
         const t = trigger.type || 'image';
         const target = trigger.target || '';
         const areaHash = __stableHash(trigger.search_area || trigger.area || null);
         const actionType = (trigger.action && trigger.action.type) ? trigger.action.type : '';
-        const id = `${t}::${target}::${areaHash}::${actionType}`;
-        // Debug: 少量打印，避免刷屏。只在开发时打开
-        if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
-            logToScreen(`[getTriggerId] id=${id} target=${target} areaHash=${areaHash}`);
-        }
-        return id;
+        return `${t}::${target}::${areaHash}::${actionType}`;
     } catch (e) {
         return 'unknown::' + Math.random().toString(36).slice(2);
     }
 }
 
-// --- end getTriggerId ---
 function ensurePriorityQueue(sequence) {
     if (!sequence.priorityQueue || !Array.isArray(sequence.priorityQueue)) {
         sequence.priorityQueue = [];
     }
     return sequence.priorityQueue;
 }
-// --- 替换 bumpTriggerPriority ---
-// 2) bumpTriggerPriority 增强：打印 id / pq 以及版本标记（放 bumpTriggerPriority 尾部）
+
+// 2) bumpTriggerPriority 
 function bumpTriggerPriority(sequence, trigger) {
     try {
         if (!sequence) return;
@@ -140,50 +164,30 @@ function bumpTriggerPriority(sequence, trigger) {
         const pq = sequence.priorityQueue;
         const id = getTriggerId(trigger);
 
-        if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
-            logToScreen(`[PQ] bump BEFORE: ${JSON.stringify(pq.slice(0,10))}`);
-            logToScreen(`[PQ] bump ID: ${id}`);
-        }
-
         const exist = pq.indexOf(id);
         if (exist >= 0) pq.splice(exist, 1);
         pq.unshift(id);
 
-        // 更新一个内存版本号，watcher 可观察到
         sequence.__priorityVersion = (sequence.__priorityVersion || 0) + 1;
-
-        if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
-            logToScreen(`[PQ] bump AFTER: ${JSON.stringify(pq.slice(0,10))} ver=${sequence.__priorityVersion}`);
-        }
-
+        
         saveCurrentProfileThrottled();
+        
+        // 写入 PQ 缓存
+        writePriorityQueueQuick(sequence);
+        
     } catch (e) {
-        logErrorToScreen(`[PQ] bumpTriggerPriority Error: ${e}`);
+        // 静默失败
     }
-    // 在 bumpTriggerPriority 的尾部（确保内存 pq 已更新）
-    try {
-        // 轻量持久化当前 sequence 的优先队列（快速文件写，覆盖小文件）
-        try { writePriorityQueueQuick(sequence); } catch (e) { }
-    } catch (e) { }
-    
-
 }
-
-
-// --- end bumpTriggerPriority ---
-
 
 function reorderByPriority(sequence, triggers) {
     try {
         if (!sequence) return triggers || [];
-        // 确保队列存在
         if (!sequence.priorityQueue || !Array.isArray(sequence.priorityQueue)) sequence.priorityQueue = [];
 
-        // 构建 id -> pos 映射（避免多次 indexOf）
         const posMap = {};
         for (let i = 0; i < sequence.priorityQueue.length; i++) {
             const id = sequence.priorityQueue[i];
-            // 只记录第一个出现的位置（优先位置）
             if (posMap[id] === undefined) posMap[id] = i;
         }
 
@@ -194,31 +198,21 @@ function reorderByPriority(sequence, triggers) {
                 return { t, idx, pos };
             })
             .sort((a, b) => {
-                // --- 新增逻辑开始 ---
-                // 1. 检查“置顶优先”标志 (isTopPriority)
-                // 如果 a 是置顶，b 不是，a 排前 (-1)
-                // 如果 a 不是，b 是置顶，b 排前 (1)
+                // 1. 置顶优先
                 const aTop = a.t.isTopPriority === true;
                 const bTop = b.t.isTopPriority === true;
-                if (aTop !== bTop) {
-                    return aTop ? -1 : 1;
-                }
-                // --- 新增逻辑结束 ---
-
-                // 2. 按照 PQ 动态位置排序
+                if (aTop !== bTop) return aTop ? -1 : 1;
+                // 2. PQ 排序
                 if (a.pos !== b.pos) return a.pos - b.pos;
-                
-                // 3. 按照原始列表顺序排序
+                // 3. 默认排序
                 return a.idx - b.idx; 
             })
             .map(x => x.t);
     } catch (e) {
-        try { logErrorToScreen('[reorderByPriority error] ' + e); } catch(e){}
         return triggers || [];
     }
 }
 // ==================== 触发器优先队列工具 /END ====================
-
 
 
 // =================================================================================
