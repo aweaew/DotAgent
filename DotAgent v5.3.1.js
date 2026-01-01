@@ -216,11 +216,14 @@ function reorderByPriority(sequence, triggers) {
 
 
 // =================================================================================
-// 脚本常量 (CONSTANTS)
+// 脚本常量 (CONSTANTS) - V2 (公开目录版)
 // =================================================================================
+
+// 【核心修改】定义一个公开可见的工作目录
+const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
+
 const CONSTANTS = {
-    // [新增] 新增图片截图
-    VERSION: "5.3.0 优先队列污染。方案加载修复",
+    VERSION: "5.3.1 公开目录版",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -231,10 +234,10 @@ const CONSTANTS = {
         TASK_SWIPE_VISUAL_SIZE: 80,
         MAX_LOG_LINES: 150,
         THEME: {
-            BACKGROUND: "#121212", // 更深的背景色
+            BACKGROUND: "#121212",
             PRIMARY_CARD: "#1E1E1E",
             SECONDARY_CARD: "#2A2A2A",
-            ACCENT_GRADIENT_START: "#007BFF", // 蓝色调
+            ACCENT_GRADIENT_START: "#007BFF",
             ACCENT_GRADIENT_END: "#00C6FF",
             PRIMARY_TEXT: "#E0E0E0",
             SECONDARY_TEXT: "#B0B0B0",
@@ -246,21 +249,25 @@ const CONSTANTS = {
         }
     },
     FILES: {
-        CONFIG_DIR: context.getExternalFilesDir(null).getAbsolutePath(),
-        IMAGE_DIR: files.join(context.getExternalFilesDir(null).getAbsolutePath(), "images"),
-        META_CONFIG_FILE: files.join(context.getExternalFilesDir(null).getAbsolutePath(), "meta_config.json"),
+        // 【核心修改】全部改到 Download/DotAgent_WorkSpace 下
+        ROOT_DIR: __WORK_DIR,
+        CONFIG_DIR: files.join(__WORK_DIR, "config"),
+        IMAGE_DIR: files.join(__WORK_DIR, "images"),
+        META_CONFIG_FILE: files.join(__WORK_DIR, "config", "meta_config.json"),
         PROFILE_PREFIX: "profile_"
     },
-    // --- 5.1.2 在这里添加新代码 ---
     REQUEST_CODES: {
         NEW_IMAGE_SELECT: 2001,
         NEW_IMAGE_CROP: 2002
     },
     TEMP_FILES: {
-        CROP_OUTPUT: "new_crop_output.jpg" // 临时裁剪文件名
+        CROP_OUTPUT: "new_crop_output.jpg"
     }
-    // --- 添加结束 ---
 };
+
+// 确保所有目录存在
+files.ensureDir(CONSTANTS.FILES.CONFIG_DIR);
+files.ensureDir(CONSTANTS.FILES.IMAGE_DIR);
 
 const DEFAULT_SETTINGS = {
     useGestureSwipe: true,
@@ -5304,23 +5311,45 @@ function validateAndResetWindowPosition(windowInstance) {
     }
 }
 function refreshAllUI() {
+    // 1. 刷新主界面设置输入框 (确保切换方案后，设置页显示新数据)
+    populateGraphicalSettings();
+
+    // 2. 刷新悬浮窗部分 (如果已创建)
     if (uiRefs.targetView && uiRefs.targetView.root) {
         try { uiRefs.targetView.root.setBackgroundColor(android.graphics.Color.parseColor(appSettings.theme.targetViewColor)); } catch (e) { logErrorToScreen("目标视图颜色格式错误"); }
     }
+    
+    // 重绘悬浮窗任务点
     recreateAllTaskVisuals();
+    
+    // 更新悬浮窗位置和文本 (异步)
     ui.post(() => {
-        if (!appState.isFloatyCreated) return;
-        if (uiRefs.targetView) { uiRefs.targetView.setSize(appSettings.targetViewSize, appSettings.targetViewSize); }
-        if (uiRefs.controlPanel) { uiRefs.controlPanel.setSize(appSettings.panelWidth, -2); }
-        if (uiRefs.targetView && appSettings.mainTargetPos) { uiRefs.targetView.setPosition(appSettings.mainTargetPos.x, appSettings.mainTargetPos.y); }
-        if (uiRefs.controlPanel && appSettings.controlPanelPos) { uiRefs.controlPanel.setPosition(appSettings.controlPanelPos.x, appSettings.controlPanelPos.y); }
-        validateAndResetWindowPosition(uiRefs.targetView);
-        validateAndResetWindowPosition(uiRefs.controlPanel);
-        syncRedDotPosition();
-        applyButtonVisibility();
-        updateProfileNameDisplay();
-        updatePositionDisplay();
+        if (appState.isFloatyCreated) {
+            if (uiRefs.targetView) { uiRefs.targetView.setSize(appSettings.targetViewSize, appSettings.targetViewSize); }
+            if (uiRefs.controlPanel) { uiRefs.controlPanel.setSize(appSettings.panelWidth, -2); }
+            if (uiRefs.targetView && appSettings.mainTargetPos) { uiRefs.targetView.setPosition(appSettings.mainTargetPos.x, appSettings.mainTargetPos.y); }
+            if (uiRefs.controlPanel && appSettings.controlPanelPos) { uiRefs.controlPanel.setPosition(appSettings.controlPanelPos.x, appSettings.controlPanelPos.y); }
+            validateAndResetWindowPosition(uiRefs.targetView);
+            validateAndResetWindowPosition(uiRefs.controlPanel);
+            syncRedDotPosition();
+            applyButtonVisibility();
+            updateProfileNameDisplay();
+            updatePositionDisplay();
+        }
     }, 50);
+
+    // 3. 【核心修复】刷新主窗口的序列列表
+    // 无论悬浮窗是否启动，只要主界面的序列编辑器被初始化过，就强制重绘
+    ui.run(() => {
+        // 检查 sequenceEditorView 是否有子视图 (说明用户点开过编辑页)
+        if (ui.sequenceEditorView && ui.sequenceEditorView.getChildCount() > 0) {
+            // 清空旧列表
+            ui.sequenceEditorView.removeAllViews();
+            // 重新渲染列表 (会读取最新的 sequences 数据)
+            renderSequenceListEditor();
+            // logToScreen("已刷新主窗口序列列表"); // 可选日志
+        }
+    });
 }
 /**
  * (最终修正版) 更新悬浮窗上的“坐标”文本
