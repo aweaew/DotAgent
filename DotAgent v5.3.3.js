@@ -223,7 +223,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.2 截图灰度化",
+    VERSION: "5.3.3 监控图片内存安全回收",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -1907,19 +1907,14 @@ function runSingleMonitorThread(sequence, sequenceKey) {
         sleep(1000);
         if (threads.currentThread().isInterrupted()) return;
 
-        //const localTriggers = sequence.triggers || [];
         let __triggersSig = __stableHash(sequence.triggers || []);
-
         const interval = sequence.executionPolicy.interval || 1000;
         let triggerCooldowns = {};
 
         while (!threads.currentThread().isInterrupted()) {
-            // 每轮首行确保 PQ 与触发器集合一致并打印（调试用）
+            // 每轮首行确保 PQ 与触发器集合一致
             try {
-                // 清理 PQ 中已不存在的 ID（保持一致性）
                 try { cleanupPriorityQueue(sequence); } catch (e) { }
-
-                // Debug 打印当前 PQ 与版本号
                 if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
                     try {
                         logToScreen('[Watcher-Start] pq=' + JSON.stringify(sequence.priorityQueue || []).slice(0, 200) + ' ver=' + (sequence.__priorityVersion || 0));
@@ -1937,16 +1932,14 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 } catch (e) { }
                 try { logToScreen('🔄 触发器集合已变更，已热更新。'); } catch (e) { }
             }
-            // 在 while 循环最开始（或在你已有的热更新检测之后）合入：
+
+            // PQ 热更新检查
             try {
-                // 尝试读取 quick-persist 的 PQ，如果是新的就合并到内存
                 var __pqObj = tryLoadPriorityQueueQuickIfNewer(sequence);
                 if (__pqObj && Array.isArray(__pqObj.priorityQueue)) {
-                    // 合并策略：采用 quick 文件的优先队列为准（但只替换 priorityQueue 字段，不替换整个 sequence）
                     try {
                         const old = sequence.priorityQueue || [];
                         sequence.priorityQueue = __pqObj.priorityQueue.slice();
-                        // bump 内存版本号，便于其他检测看到变化
                         sequence.__priorityVersion = (sequence.__priorityVersion || 0) + 1;
                         logToScreen(`[PQ merge] loaded quick PQ (len=${sequence.priorityQueue.length}) ts=${__pqObj.ts}`);
                     } catch (e) {
@@ -1957,14 +1950,19 @@ function runSingleMonitorThread(sequence, sequenceKey) {
 
             // 每轮取一次快照
             const localTriggers = Array.isArray(sequence.triggers) ? sequence.triggers.slice() : [];
+            
+            // 🔴 关键点1：变量声明在 try 外面
+            let capturedImage = null; 
+            let triggerFiredInCycle = false;
+
             try {
-                let triggerFiredInCycle = false;
-                let capturedImage = null;
+                // 截图逻辑
                 for (let retry = 0; retry < 3; retry++) {
-                    capturedImage = captureAndProcessScreen(); // <--- 替换这里
+                    capturedImage = captureAndProcessScreen(); 
                     if (capturedImage) break;
                     sleep(300);
                 }
+                
                 if (!capturedImage) {
                     logErrorToScreen(`[${sequence.name}] 连续截图失败，跳过本轮。`);
                     if (!sequence._failCount) sequence._failCount = 0;
@@ -1980,207 +1978,174 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     sequence._failCount = 0;
                 }
 
-                // 3) watcher 循环里：排序后打印 priorityQueue 与 ordered（放在每轮 reorder 之后）
-                // 【核心修复】直接使用 reorderByPriority 的结果。
-                // 它已经完美处理了 "🔥 置顶优先" 和 "PQ 动态排序" 的混合逻辑。
-                // 我们不再需要旧版的 mismatch/rebuild 逻辑，因为它会强制覆盖掉置顶效果。
-                
-                var ordered_final = reorderByPriority(sequence, localTriggers);
-
-                // debug print (可选，保留用于调试)
+                // ================== 🔰 内存安全层开始 ==================
+                // 这里的 try...finally 确保图片一定会被回收
                 try {
-                    if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
-                        // 打印前几个触发器的名字，看看置顶是否生效
-                        var debugNames = ordered_final.slice(0, 5).map(t => (t.isTopPriority ? "🔥" : "") + (t.name || t.target || "unnamed"));
-                        logToScreen(`[Watcher] Final Order: ${debugNames.join(', ')}`);
-                    }
-                } catch (e) { }
+                    var ordered_final = reorderByPriority(sequence, localTriggers);
 
-                // debug print
-                try {
-                    if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
-                        logToScreen(`[Watcher] pq=${JSON.stringify((sequence.priorityQueue || []).slice(0, 10))} ordered=${ordered_final.slice(0, 6).map(t => (t.name || t.target || getTriggerId(t))).join(',')} ver=${sequence.__priorityVersion || 0}`);
-                    }
-                } catch (e) { }
+                    // Debug print
+                    try {
+                        if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
+                            var debugNames = ordered_final.slice(0, 5).map(t => (t.isTopPriority ? "🔥" : "") + (t.name || t.target || "unnamed"));
+                            logToScreen(`[Watcher] Final Order: ${debugNames.join(', ')}`);
+                        }
+                    } catch (e) { }
 
-                ordered_final.forEach(function (trigger) {
-                    if (trigger.enabled === false) return; // 关键：跳过已禁用的触发器
-                    if (triggerFiredInCycle || threads.currentThread().isInterrupted()) return;
+                    ordered_final.forEach(function (trigger) {
+                        if (trigger.enabled === false) return;
+                        if (triggerFiredInCycle || threads.currentThread().isInterrupted()) return;
 
-                    const triggerId = getTriggerId(trigger);
-                    const cooldownEndTime = triggerCooldowns[triggerId];
+                        const triggerId = getTriggerId(trigger);
+                        const cooldownEndTime = triggerCooldowns[triggerId];
+                        const realNowTime = new Date().getTime();
 
-                    // 【核心修复】在检查的“当下”获取最新时间
-                    const realNowTime = new Date().getTime();
+                        if (cooldownEndTime && realNowTime < cooldownEndTime) {
+                            // const remainingMs = cooldownEndTime - realNowTime;
+                            // logToScreen(`[Debug Cooldown] [${triggerId}] 冷却中... 剩余: ${remainingMs} ms`);
+                            return;
+                        }
 
-                    // 1. 检查是否正在冷却
-                    if (cooldownEndTime && realNowTime < cooldownEndTime) {
+                        if (cooldownEndTime && realNowTime >= cooldownEndTime) {
+                            delete triggerCooldowns[triggerId];
+                        }
 
-                        // 【新的调试日志】
-                        const remainingMs = cooldownEndTime - realNowTime;
-                        logToScreen(`[Debug Cooldown] [${triggerId}] 冷却中... 剩余: ${remainingMs} ms`);
+                        let foundLocation = null;
 
-                        return; // 仍在冷却中，跳过
-                    }
-
-                    // 2. （可选）如果冷却时间刚结束
-                    if (cooldownEndTime && realNowTime >= cooldownEndTime) {
-                        logToScreen(`[Debug Cooldown] [${triggerId}] 冷却结束。`);
-                        delete triggerCooldowns[triggerId]; // 清理旧时间
-                    }
-
-                    let foundLocation = null;
-
-                    if (trigger.type === 'image') {
-                        let template = null;
-                        try {
-                            let imagePath = files.join(CONSTANTS.FILES.IMAGE_DIR, trigger.target);
-                            if (files.exists(imagePath)) {
-                                template = images.read(imagePath);
-                                if (template) {
-                                    // =========== 🔴【添加这段代码】开始 ===========
-                                    // 修复: 确保模板图和截图的颜色模式一致
-                                    if (appSettings.useGrayscale) {
-                                        try {
-                                            let grayTemp = images.grayscale(template);
-                                            template.recycle(); // 释放原彩色图
-                                            template = grayTemp; // 替换为灰度图
-                                        } catch(e) {
-                                            // 极少情况转换失败，忽略
+                        if (trigger.type === 'image') {
+                            let template = null;
+                            try {
+                                let imagePath = files.join(CONSTANTS.FILES.IMAGE_DIR, trigger.target);
+                                if (files.exists(imagePath)) {
+                                    template = images.read(imagePath);
+                                    if (template) {
+                                        // 灰度化兼容修复
+                                        if (appSettings.useGrayscale) {
+                                            try {
+                                                let grayTemp = images.grayscale(template);
+                                                template.recycle();
+                                                template = grayTemp;
+                                            } catch (e) { }
                                         }
-                                    }
-                                    // =========== 🔴【添加这段代码】结束 ===========
-                                    let p = null;
-                                    // --- 关键修改: 启用缓存并使用 padding 变量 ---
-                                    if (trigger.cachedBounds) { // <-- 1. 修复: 移除了 'false &&'
-                                        let b = trigger.cachedBounds;
-                                        let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
-                                        let region = calculatePaddedRegion(b, padding);
-                                        p = images.findImage(capturedImage, template, { region: region, threshold: trigger.threshold || 0.8 });
+
+                                        let p = null;
+                                        if (trigger.cachedBounds) {
+                                            let b = trigger.cachedBounds;
+                                            let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
+                                            let region = calculatePaddedRegion(b, padding);
+                                            p = images.findImage(capturedImage, template, { region: region, threshold: trigger.threshold || 0.8 });
+                                            if (!p) {
+                                                // toast(`...[${trigger.target}] 缓存未命中`);
+                                            }
+                                        }
                                         if (!p) {
-                                            toast(`...[${trigger.target}] 缓存未命中，将执行全屏扫描。`);
+                                            let findOptions = { threshold: trigger.threshold || 0.8 };
+                                            if (trigger.search_area && trigger.search_area.length === 4) {
+                                                let [x1, y1, x2, y2] = trigger.search_area;
+                                                let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                                                findOptions.region = calculatePaddedRegion(searchBounds, 0);
+                                            }
+                                            p = images.findImage(capturedImage, template, findOptions);
+                                            if (p) {
+                                                trigger.cachedBounds = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
+                                                saveCurrentProfileThrottled();
+                                            }
                                         }
-                                    }
-                                    // --- 修改结束 ---
-                                    if (!p) {
-                                        let findOptions = { threshold: trigger.threshold || 0.8 };
-                                        if (trigger.search_area && trigger.search_area.length === 4) {
-                                            // --- 核心修复：使用 calculatePaddedRegion 来限制 search_area ---
-                                            let [x1, y1, x2, y2] = trigger.search_area;
-                                            let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
-                                            findOptions.region = calculatePaddedRegion(searchBounds, 0); // 0 padding
-                                            // --- 修复结束 ---
-                                        }
-                                        p = images.findImage(capturedImage, template, findOptions);
                                         if (p) {
-                                            trigger.cachedBounds = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
-                                            saveCurrentProfileThrottled();
+                                            foundLocation = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
                                         }
-                                    }
-                                    if (p) {
-                                        foundLocation = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
                                     }
                                 }
+                            } finally {
+                                if (template) template.recycle();
                             }
-                        } finally {
-                            if (template) template.recycle();
-                        }
-                    } else if (trigger.type === 'ocr') {
-                        let ocrTarget = null;
-                        // --- 关键修改: 为 OCR 应用 padding 变量 ---
-                        if (trigger.cachedBounds) {
-                            let b = trigger.cachedBounds;
-                            // 1. 修复: 为 OCR 也应用 cachePadding 变量
-                            let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
-                            let cacheRegion = calculatePaddedRegion(b, padding);
-                            let ocrResults = ocr.paddle.detect(capturedImage, { region: cacheRegion, useSlim: true });
-                            ocrTarget = ocrResults.find(r => r.label.includes(trigger.target));
+                        } else if (trigger.type === 'ocr') {
+                            let ocrTarget = null;
+                            if (trigger.cachedBounds) {
+                                let b = trigger.cachedBounds;
+                                let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
+                                let cacheRegion = calculatePaddedRegion(b, padding);
+                                let ocrResults = ocr.paddle.detect(capturedImage, { region: cacheRegion, useSlim: true });
+                                ocrTarget = ocrResults.find(r => r.label.includes(trigger.target));
+                            }
                             if (!ocrTarget) {
-                                logToScreen(`...缓存未命中，将执行全屏扫描。`);
+                                let ocrOptions = { useSlim: true };
+                                if (trigger.search_area && trigger.search_area.length === 4) {
+                                    let [x1, y1, x2, y2] = trigger.search_area;
+                                    let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                                    ocrOptions.region = calculatePaddedRegion(searchBounds, 0);
+                                }
+                                let ocrResults = ocr.paddle.detect(capturedImage, ocrOptions);
+                                ocrTarget = ocrResults.find(r => r.label.includes(trigger.target));
+                                if (ocrTarget) {
+                                    let b = ocrTarget.bounds;
+                                    trigger.cachedBounds = { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
+                                    saveCurrentProfileThrottled();
+                                }
                             }
-                        }
-                        // --- 修改结束 ---
-                        if (!ocrTarget) {
-                            let ocrOptions = { useSlim: true };
-                            if (trigger.search_area && trigger.search_area.length === 4) {
-                                // --- 核心修复：使用 calculatePaddedRegion 来限制 search_area ---
-                                let [x1, y1, x2, y2] = trigger.search_area;
-                                let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
-                                ocrOptions.region = calculatePaddedRegion(searchBounds, 0); // 0 padding
-                                // --- 修复结束 ---
-                            }
-                            let ocrResults = ocr.paddle.detect(capturedImage, ocrOptions);
-                            ocrTarget = ocrResults.find(r => r.label.includes(trigger.target));
                             if (ocrTarget) {
                                 let b = ocrTarget.bounds;
-                                trigger.cachedBounds = { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
-                                saveCurrentProfileThrottled();
+                                foundLocation = { x: b.left, y: b.top, width: b.width(), height: b.height() };
+                            }
+                        } else if (trigger.type === 'timer_end') {
+                            const timerName = trigger.target;
+                            if (appState.timers[timerName] && realNowTime > appState.timers[timerName]) {
+                                logToScreen(`...计时器 [${timerName}] 已到期。`);
+                                foundLocation = { x: 0, y: 0, width: 0, height: 0 };
+                                delete appState.timers[timerName];
                             }
                         }
-                        if (ocrTarget) {
-                            let b = ocrTarget.bounds;
-                            foundLocation = { x: b.left, y: b.top, width: b.width(), height: b.height() };
-                        }
-                    // 【修复 3b】: 添加 timer_end 触发器的检查逻辑
-                    } else if (trigger.type === 'timer_end') {
-                        const timerName = trigger.target;
-                        // (使用 realNowTime 检查)
-                        if (appState.timers[timerName] && realNowTime > appState.timers[timerName]) {
-                            logToScreen(`...计时器 [${timerName}] 已到期，触发动作。`);
-                            foundLocation = { x: 0, y: 0, width: 0, height: 0 }; 
-                            delete appState.timers[timerName]; // 删除计时器防止重复触发
-                        }
-                    }
 
-                    if (foundLocation) {
-                        // --- 目标找到 (onSuccess) ---
-                        executeTriggerAction(trigger, foundLocation);
-                        triggerFiredInCycle = true;
-                        // 优先队列：命中后前置
-                        bumpTriggerPriority(sequence, trigger);
-                        if (trigger.cooldownMs > 0) {
-                            triggerCooldowns[triggerId] = new Date().getTime() + trigger.cooldownMs;
-                        }
-                    } else {
-                        // --- 目标未找到 (onFail) [新逻辑] ---
-                        if (trigger.onFail && trigger.onFail.action && trigger.onFail.action !== 'skip') {
-                            // 执行 onFail 动作
-                            executeMonitorFailAction(trigger);
-                            // 标记为已触发，这样“默认任务”就不会运行了
+                        if (foundLocation) {
+                            executeTriggerAction(trigger, foundLocation);
                             triggerFiredInCycle = true;
+                            bumpTriggerPriority(sequence, trigger);
+                            if (trigger.cooldownMs > 0) {
+                                triggerCooldowns[triggerId] = new Date().getTime() + trigger.cooldownMs;
+                            }
+                        } else {
+                            if (trigger.onFail && trigger.onFail.action && trigger.onFail.action !== 'skip') {
+                                executeMonitorFailAction(trigger);
+                                triggerFiredInCycle = true;
+                            }
                         }
-                        // --- onFail 逻辑结束 ---
+                    });
+
+                } finally {
+                    // 🔴 关键点2：这里是内存保险
+                    // 无论 try 里面发生了报错(catch) 还是正常运行，这里一定会执行
+                    if (capturedImage && !capturedImage.isRecycled()) {
+                        capturedImage.recycle();
+                        capturedImage = null; // 置空防止重复引用
                     }
-                });
+                }
+                // ================== 🔰 内存安全层结束 ==================
 
-                capturedImage.recycle();
 
+                // 后续逻辑 (图片已回收)
                 if (!triggerFiredInCycle && sequence.tasks && sequence.tasks.length > 0) {
-                    logToScreen(`[${sequence.name}] 未触发任何条件，执行序列内任务...`);
+                    logToScreen(`[${sequence.name}] 未触发条件，执行默认任务...`);
                     executeSequence(sequence.tasks, `监控序列 (${sequence.name}) 的未命中任务`, 'monitor');
                 }
+
                 if (new Date().getTime() % 30000 < interval) {
                     try {
-                        //images.gc();
                         java.lang.System.gc();
                         logToScreen("🧹 已执行内存清理");
-                    } catch (e) {
-                        logErrorToScreen("内存清理失败: " + e);
-                    }
+                    } catch (e) {}
                 }
 
             } catch (e) {
                 if (e instanceof java.lang.InterruptedException) break;
-                logErrorToScreen(`监控线程 [${sequence.name}] 出现严重错误: ${e}`);
+                // 这里如果报错，因为有上面的 finally，图片也肯定已经被回收了，安全！
+                logErrorToScreen(`监控线程 [${sequence.name}] 错误: ${e}`);
             }
             sleep(interval);
         }
-        logToScreen(`监控序列 [${sequence.name}] 线程已优雅地停止。`);
+        logToScreen(`监控序列 [${sequence.name}] 线程已停止。`);
     });
 
     appState.threads[monitorThreadId] = monitorThread;
     appState.activeMonitors[sequenceKey] = monitorThreadId;
-
 }
 
 /**
