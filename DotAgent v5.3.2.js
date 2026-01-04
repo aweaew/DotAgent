@@ -175,7 +175,6 @@ function bumpTriggerPriority(sequence, trigger) {
         // 写入 PQ 缓存
         writePriorityQueueQuick(sequence);
         
-        
     } catch (e) {
         // 静默失败
     }
@@ -224,7 +223,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.2 增加日志 ",
+    VERSION: "5.3.2 截图灰度化",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -289,7 +288,9 @@ const DEFAULT_SETTINGS = {
         taskSwipeColor: CONSTANTS.UI.THEME.DEFAULT_TASK_SWIPE_COLOR
     },
     taskVisualsHidden: false, // <-- 1. 在这里添加新行 (别忘了逗号)
-    defaultCachePadding: 50   // <-- 在它下面添加这一行
+    defaultCachePadding: 50,   // <-- 在它下面添加这一行
+    // 【新增】默认关闭灰度化
+    useGrayscale: false
 };
 
 
@@ -415,7 +416,7 @@ ui.layout(
                                     <text textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}">默认缓存扩边(px):</text>
                                     <input id="defaultCachePaddingInput" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" />
                                 </horizontal>
-                                <checkbox id="enableTriggerLogCheckbox" text="启用触发器日志 (保存到文件)" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" marginTop="10" />
+                                <checkbox id="useGrayscaleCheckbox" text="截图灰度化 (加速找图/OCR)" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" marginTop="10" />
                                 <text text="界面定制" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" textStyle="bold" marginTop="20" />
                                 <horizontal gravity="center_vertical" marginTop="10"><text textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}">控制面板宽度:</text><input id="panelWidthInput" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" /></horizontal>
                                 <horizontal gravity="center_vertical" marginTop="10"><text textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}">目标视图大小:</text><input id="targetViewSizeInput" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" /></horizontal>
@@ -816,62 +817,48 @@ function isValidHexColor(colorStr) {
     return /^#(?:[0-9a-fA-F]{3,4}){1,2}$/.test(colorStr) && (colorStr.length === 7 || colorStr.length === 9);
 }
 
-// =================================================================================
-// 修复 1: 升级后的设置保存逻辑 (替换原有的 ui.saveGraphicalSettingsBtn.click)
-// =================================================================================
 ui.saveGraphicalSettingsBtn.click(() => {
     try {
-        // 1. 颜色校验
         const targetColor = ui.targetColorInput.getText().toString();
         const clickTaskColor = ui.clickTaskColorInput.getText().toString();
         const swipeTaskColor = ui.swipeTaskColorInput.getText().toString();
         if (!isValidHexColor(targetColor) || !isValidHexColor(clickTaskColor) || !isValidHexColor(swipeTaskColor)) {
-            toast("颜色代码格式不正确 (#RRGGBB)");
+            toast("颜色代码格式不正确，应为 #RRGGBB 或 #AARRGGBB 格式。");
             return;
         }
 
-        // 2. 安全读取函数 (空值自动转默认，而不是 NaN)
-        const getSafeInt = (inputView, defVal) => {
-            let txt = inputView.getText().toString();
-            if (!txt || txt.trim() === "") return defVal;
-            let val = parseInt(txt);
-            return isNaN(val) ? defVal : val;
-        };
-
-        // 3. 读取数据 (使用安全函数)
-        appSettings.clickDelayMs = getSafeInt(ui.clickDelayInput, 100);
-        appSettings.swipe = appSettings.swipe || {};
-        appSettings.swipe.duration = getSafeInt(ui.swipeDurationInput, 300);
-        
-        // yOffset 特殊处理：如果是 0 且能获取到状态栏高度，则自动填充
-        let rawY = getSafeInt(ui.yOffsetInput, 0);
-        appSettings.yOffset = (rawY === 0 && statusBarHeight > 0) ? statusBarHeight : rawY;
-
-        appSettings.panelWidth = getSafeInt(ui.panelWidthInput, 240);
-        appSettings.targetViewSize = getSafeInt(ui.targetViewSizeInput, 100);
-        appSettings.defaultCachePadding = getSafeInt(ui.defaultCachePaddingInput, 50);
-        
-        // 开关状态
+        const clickDelayStr = ui.clickDelayInput.getText().toString();
+        const swipeDurationStr = ui.swipeDurationInput.getText().toString();
+        const yOffsetStr = ui.yOffsetInput.getText().toString();
+        const panelWidthStr = ui.panelWidthInput.getText().toString();
+        const targetViewSizeStr = ui.targetViewSizeInput.getText().toString();
+        // --- 1. 在这里添加新行 ---
+        const defaultCachePaddingStr = ui.defaultCachePaddingInput.getText().toString();
+        // --- 2. 修改下面的 if 语句 ---
+        if (!validateNumericInput(clickDelayStr) || !validateNumericInput(swipeDurationStr) || !validateNumericInput(yOffsetStr) || !validateNumericInput(panelWidthStr) || !validateNumericInput(targetViewSizeStr) || !validateNumericInput(defaultCachePaddingStr)) {
+            return;
+        }
+        appSettings.clickDelayMs = parseInt(clickDelayStr);
+        appSettings.swipe.duration = parseInt(swipeDurationStr);
+        appSettings.yOffset = parseInt(yOffsetStr) || statusBarHeight;
+        appSettings.panelWidth = parseInt(panelWidthStr);
+        appSettings.targetViewSize = parseInt(targetViewSizeStr);
+        // --- 3. 在这里添加新行 ---
+        appSettings.defaultCachePadding = parseInt(defaultCachePaddingStr);
         appSettings.showPanelCoordinates = ui.showCoordsCheckbox.isChecked();
         appSettings.theme.targetViewColor = targetColor;
         appSettings.theme.taskClickColor = clickTaskColor;
         appSettings.theme.taskSwipeColor = swipeTaskColor;
         appSettings.useGestureSwipe = ui.useGestureSwipeCheckbox.isChecked();
         appSettings.taskVisualsHidden = ui.taskVisualsHiddenCheckbox.isChecked();
-        
-        // 日志开关 (如果有)
-        if (ui.enableTriggerLogCheckbox) {
-            appSettings.enableTriggerLog = ui.enableTriggerLogCheckbox.isChecked();
-        }
-
-        // 4. 保存并刷新
+        // 【新增】保存灰度化设置
+        appSettings.useGrayscale = ui.useGrayscaleCheckbox.isChecked();
         saveCurrentProfileThrottled();
         if (appState.isFloatyCreated) {
             refreshAllUI();
         }
-        logToScreen("设置已保存 (数据已清洗)。");
+        logToScreen("设置已通过图形化面板保存。");
         toast("设置已保存并应用！");
-
     } catch (e) {
         logErrorToScreen("图形化设置保存失败: " + e.message);
         toast("保存失败: " + e.message);
@@ -1103,13 +1090,8 @@ function isBusy() {
     return false;
 }
 
-// =================================================================================
-// 序列执行逻辑 (Sequence Execution) - V5 (完整修复版)
-// =================================================================================
-
 function executeSequence(tasksToRun, sourceName, contextType, depth) {
     depth = depth || 0;
-    // 防止无限递归
     if (depth > 50) {
         logErrorToScreen(`错误: 序列调用深度过深(>${depth})，可能存在无限循环: ${sourceName}`);
         return;
@@ -1119,22 +1101,29 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
         logToScreen(`序列 [${sourceName}] 为空或无效，跳过执行。`);
         return;
     }
-    
     logToScreen(`开始执行序列: ${sourceName}`);
-    
     for (let i = 0; i < tasksToRun.length; i++) {
-        // 检查全局停止信号
         if (getStopSignal(contextType)) {
-            logToScreen(`序列 [${sourceName}] 被中断。`);
+            logToScreen(`序列 [${sourceName}] 在任务 ${i + 1} 前被外部停止信号中断。`);
             break;
         }
 
         let task = tasksToRun[i];
-        if (!task || typeof task !== 'object') continue;
-        if (task.enabled === false) continue;
+        if (typeof task !== 'object' || task === null) {
+            logErrorToScreen(`警告: 在序列 [${sourceName}] 的第 ${i + 1} 个位置发现无效任务 (非对象)，跳过。`);
+            continue;
+        }
 
-        // 任务前置延迟
+        // --- 核心修改：在这里添加 ---
+        // (如果 task.enabled 未定义, 'undefined === false' 为 false, 任务会正常运行)
+        if (task.enabled === false) {
+            logToScreen(`[${sourceName}] 任务 ${i + 1} (${task.name || task.type}) 已被禁用，跳过。`);
+            continue; // 跳过此任务，执行下一个
+        }
+        // --- 修改结束 ---
+
         if (task.delayMs > 0) {
+            logToScreen(`任务 [${task.name}] 延迟执行 ${task.delayMs}ms`);
             sleep(task.delayMs);
             if (threads.currentThread().isInterrupted()) break;
         }
@@ -1143,95 +1132,112 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
 
         switch (task.type) {
             case 'click': {
-                logToScreen(`执行: ${taskName}`);
-                // 点击坐标不受横竖屏影响（除非是固定坐标且屏幕转了，但通常难以避免）
-                let cx = task.x + (task.offsetX || 0);
-                let cy = task.y + (task.offsetY || 0);
-                safePress(cx, cy, CONSTANTS.UI.CLICK_PRESS_DURATION_MS);
-                showClickDot(cx, cy);
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
+                let offsetX = task.offsetX || 0;
+                let offsetY = task.offsetY || 0;
+                let clickX = task.x + offsetX;
+                let clickY = task.y + offsetY;
+                logToScreen(`... 点击坐标: (${clickX}, ${clickY}) (基准: ${task.x},${task.y} | 偏移: ${offsetX},${offsetY})`);
+                safePress(clickX, clickY, CONSTANTS.UI.CLICK_PRESS_DURATION_MS);
+                showClickDot(clickX, clickY);
                 sleep(appSettings.clickDelayMs);
+                if (threads.currentThread().isInterrupted()) break;
                 break;
             }
             case 'wait': {
-                logToScreen(`执行: ${taskName} (${task.duration}ms)`);
-                let total = task.duration || 1000;
-                // 显示倒计时状态
-                appState.currentWaitTask = { remaining: total, total: total };
-                let elapsed = 0;
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
+                let totalWaitTime = task.duration || 1000;
+                toast(`执行: ${taskName}`);
+
+                // --- 核心修改：在这里设置倒计时 ---
+                appState.currentWaitTask = { remaining: totalWaitTime, total: totalWaitTime };
+                // --- 修改结束 ---
+
+                let timeWaited = 0;
+                const sleepInterval = 1000; // 保持 1000ms, 与我们的时钟同步
+                const toastThreshold = 10000;
+                let nextToastPoint = toastThreshold;
+
                 try {
-                    while (elapsed < total) {
-                        if (getStopSignal(contextType)) break;
-                        sleep(200);
-                        elapsed += 200;
-                        if (appState.currentWaitTask) appState.currentWaitTask.remaining = total - elapsed;
+                    while (timeWaited < totalWaitTime) {
+                        if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
+                        sleep(sleepInterval);
+                        if (threads.currentThread().isInterrupted()) break;
+                        timeWaited += sleepInterval;
+
+                        // --- 核心修改：更新倒计时 ---
+                        if (appState.currentWaitTask) {
+                            appState.currentWaitTask.remaining = totalWaitTime - timeWaited;
+                        }
+                        // --- 修改结束 ---
                     }
                 } finally {
+                    // --- 核心修改：清除倒计时 ---
                     appState.currentWaitTask = null;
+                    // --- 修改结束 ---
                 }
                 break;
             }
             case 'swipe': {
-                logToScreen(`执行: ${taskName}`);
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
+                toast(`执行: ${taskName}`);
                 if (appSettings.useGestureSwipe) {
                     smoothSwipe(task.startX, task.startY, task.endX, task.endY);
                 } else {
-                    swipe(task.startX, task.startY, task.endX, task.endY, task.duration || 300);
+                    swipe(task.startX, task.startY, task.endX, task.endY, task.duration || appSettings.swipe.duration);
+                    logToScreen(`成功执行普通滑动: 从 (${task.startX}, ${task.startY}) 到 (${task.endX}, ${task.endY})，时长 ${task.duration || appSettings.swipe.duration}ms`);
+                    sleep(appSettings.clickDelayMs);
                 }
-                sleep(appSettings.clickDelayMs);
+                if (threads.currentThread().isInterrupted()) break;
                 break;
             }
             case 'ocr': {
-                logToScreen(`执行: ${taskName} ("${task.textToFind}")`);
+                // 使用 var 避免重复声明
+                var taskNameLog = task.name ? taskName : `${taskName} ("${task.textToFind}")`;
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskNameLog}`);
+                
                 var foundResult = null;
                 var timeout = task.timeout || 5000;
-                
+
                 // --- 1. 尝试缓存搜索 ---
                 if (task.cachedBounds && task.cachedBounds.left !== undefined) {
-                    var captured = captureScreen();
+                    logToScreen(`... 尝试缓存搜索`);
+                    var captured = captureAndProcessScreen(); // <--- 替换这里
                     if (captured) {
-                        // 【核心修复】检查屏幕旋转
-                        var imgW = captured.getWidth();
-                        var imgH = captured.getHeight();
                         var b = task.cachedBounds;
-                        
-                        if (b.bottom > imgH || b.right > imgW) {
-                            // logToScreen("...缓存失效(屏幕旋转)");
-                            // 缓存失效，不进行搜索
-                        } else {
-                            var padding = (task.cachePadding !== undefined) ? task.cachePadding : (appSettings.defaultCachePadding || 50);
-                            var region = calculatePaddedRegion(b, padding, imgW, imgH);
-                            if (region[2] > 0 && region[3] > 0) {
-                                var res = ocr.paddle.detect(captured, { region: region, useSlim: true });
-                                var target = res.find(r => r.label.includes(task.textToFind));
-                                if (target) foundResult = target;
-                            }
+                        var padding = (task.cachePadding !== undefined) ? task.cachePadding : (appSettings.defaultCachePadding || 50);
+                        var region = calculatePaddedRegion(b, padding);
+                        var ocrResults = ocr.paddle.detect(captured, { region: region, useSlim: true });
+                        var target = ocrResults.find(r => r.label.includes(task.textToFind));
+                        if (target) {
+                            logToScreen("... 缓存命中");
+                            foundResult = target;
                         }
                         captured.recycle();
                     }
                 }
 
-                // --- 2. 全屏搜索 ---
+                // --- 2. 全屏/区域搜索 ---
                 if (!foundResult) {
-                    var start = Date.now();
-                    while (Date.now() - start < timeout) {
-                        if (getStopSignal(contextType)) break;
-                        var captured = captureScreen();
-                        if (!captured) { sleep(500); continue; }
+                    var startTime = new Date().getTime();
+                    while (new Date().getTime() - startTime < timeout) {
+                        if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
                         
-                        var opts = { useSlim: true };
+                        var captured = captureAndProcessScreen(); // <--- 替换这里
+                        if (!captured) { sleep(1000); continue; }
+
+                        var ocrOptions = { useSlim: true };
                         if (task.search_area && task.search_area.length === 4) {
                             var [x1, y1, x2, y2] = task.search_area;
-                            // 传入图片宽高，防止 search_area 越界
-                            opts.region = calculatePaddedRegion({left:x1, top:y1, right:x2, bottom:y2}, 0, captured.getWidth(), captured.getHeight());
+                            var searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                            ocrOptions.region = calculatePaddedRegion(searchBounds, 0);
                         }
-
-                        var res = ocr.paddle.detect(captured, opts);
+                        var ocrResults = ocr.paddle.detect(captured, ocrOptions);
                         captured.recycle();
                         
-                        var target = res.find(r => r.label.includes(task.textToFind));
+                        var target = ocrResults.find(r => r.label.includes(task.textToFind));
                         if (target) {
                             foundResult = target;
-                            // 更新缓存
                             task.cachedBounds = { left: target.bounds.left, top: target.bounds.top, right: target.bounds.right, bottom: target.bounds.bottom };
                             saveCurrentProfileThrottled();
                             break;
@@ -1240,225 +1246,427 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     }
                 }
 
-                // --- 3. 结果 ---
+                if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
+
+                // --- 3. 结果处理 ---
                 if (foundResult) {
-                    var act = task.onSuccess || { action: 'click' };
-                    handleOcrSuccess(foundResult, act);
-                    // 处理后续逻辑 (终止或子序列)
-                    if (act.after === 'terminate') { ui.run(() => stopExecution(`任务终止`)); break; }
-                    if (act.after === 'sequence' && act.sequenceName) {
-                        var sub = sequences[act.sequenceName];
-                        if (sub) executeSequence(sub.tasks, sub.name, contextType, depth + 1);
+                    var successAction = task.onSuccess || { action: 'click', after: 'none' };
+                    var taskActionType = successAction.action; 
+
+                    // handleOcrSuccess 处理主动作
+                    handleOcrSuccess(foundResult, successAction);
+
+                    // 处理后续操作
+                    if (successAction.after === 'terminate') {
+                        logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 终止序列。`);
+                        ui.run(() => stopExecution(`任务 [${taskNameLog}] 触发终止`));
+                        break; 
+                    } else if (successAction.after === 'sequence') {
+                        if (successAction.sequenceName) {
+                            logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 调用子序列。`);
+                            // 【修复点】使用 var subSeq
+                            var subSeq = sequences[successAction.sequenceName];
+                            if (subSeq) {
+                                executeSequence(subSeq.tasks, `子序列 (${subSeq.name})`, contextType, depth + 1);
+                            } else {
+                                logErrorToScreen(`错误: 找不到子序列 ${successAction.sequenceName}`);
+                            }
+                        }
                     }
+
                 } else {
+                    logToScreen(`超时 ${timeout}ms 未找到文本 "${task.textToFind}"`);
                     handleGeneralFailAction(task.onFail, '识别失败', sourceName, contextType, depth);
                 }
                 break;
             }
             case 'image': {
-                logToScreen(`执行: ${taskName} ("${task.imageFile}")`);
-                var foundPt = null;
-                var timeout = task.timeout || 5000;
-                var imgPath = files.join(CONSTANTS.FILES.IMAGE_DIR, task.imageFile);
+                // 使用 var
+                var taskNameLog = task.name ? taskName : `${taskName} ("${task.imageFile}")`;
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskNameLog}`);
                 
-                if (!files.exists(imgPath)) {
-                    logErrorToScreen("图片不存在: " + task.imageFile);
+                var foundImagePoint = null;
+                var imageTimeout = task.timeout || 5000;
+                var imagePath = files.join(CONSTANTS.FILES.IMAGE_DIR, task.imageFile);
+
+                if (!files.exists(imagePath)) {
+                    logErrorToScreen(`图片不存在: ${task.imageFile}`);
+                    handleGeneralFailAction(task.onFail, '找图失败', sourceName, contextType, depth);
                     break;
                 }
-                var templ = images.read(imgPath);
-                if (!templ) break;
-
+                var template = images.read(imagePath);
+                if (!template) {
+                    logErrorToScreen(`无法读取图片: ${task.imageFile}`);
+                    handleGeneralFailAction(task.onFail, '找图失败', sourceName, contextType, depth);
+                    break;
+                }
+                // =========== 🔴【添加这段代码】开始 ===========
+                if (appSettings.useGrayscale) {
+                    try {
+                        let grayTemp = images.grayscale(template);
+                        template.recycle();
+                        template = grayTemp;
+                    } catch(e) {}
+                }
+                // =========== 🔴【添加这段代码】结束 ===========
                 // --- 1. 缓存搜索 ---
                 if (task.cachedBounds && task.cachedBounds.x !== undefined) {
-                    var captured = captureScreen();
+                    logToScreen(`... 尝试缓存搜索`);
+                    var captured = captureAndProcessScreen(); // <--- 替换这里
                     if (captured) {
-                        var imgW = captured.getWidth();
-                        var imgH = captured.getHeight();
                         var b = task.cachedBounds;
-                        
-                        // 【核心修复】检查屏幕旋转
-                        if ((b.y + b.height) > imgH || (b.x + b.width) > imgW) {
-                            // 缓存失效
-                        } else {
-                            var padding = (task.cachePadding !== undefined) ? task.cachePadding : (appSettings.defaultCachePadding || 50);
-                            var region = calculatePaddedRegion(b, padding, imgW, imgH);
-                            if (region[2] > 0 && region[3] > 0) {
-                                var p = images.findImage(captured, templ, { region: region, threshold: task.threshold || 0.8 });
-                                if (p) foundPt = p;
-                            }
+                        var padding = (task.cachePadding !== undefined) ? task.cachePadding : (appSettings.defaultCachePadding || 50);
+                        var region = calculatePaddedRegion(b, padding);
+                        var p = images.findImage(captured, template, { region: region, threshold: task.threshold || 0.8 });
+                        if (p) {
+                            logToScreen("... 缓存命中");
+                            foundImagePoint = p;
                         }
                         captured.recycle();
                     }
                 }
 
-                // --- 2. 全屏搜索 ---
-                if (!foundPt) {
-                    var start = Date.now();
-                    while (Date.now() - start < timeout) {
-                        if (getStopSignal(contextType)) break;
-                        var captured = captureScreen();
-                        if (!captured) { sleep(500); continue; }
+                // --- 2. 全屏/区域搜索 ---
+                if (!foundImagePoint) {
+                    var startTime = new Date().getTime();
+                    while (new Date().getTime() - startTime < imageTimeout) {
+                        if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
                         
-                        var opts = { threshold: task.threshold || 0.8 };
+                        var captured = captureAndProcessScreen();
+                        if (!captured) { sleep(1000); continue; }
+
+                        var findOptions = { threshold: task.threshold || 0.8 };
                         if (task.search_area && task.search_area.length === 4) {
                             var [x1, y1, x2, y2] = task.search_area;
-                            opts.region = calculatePaddedRegion({left:x1, top:y1, right:x2, bottom:y2}, 0, captured.getWidth(), captured.getHeight());
+                            var searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                            findOptions.region = calculatePaddedRegion(searchBounds, 0);
                         }
-
-                        var p = images.findImage(captured, templ, opts);
+                        var p = images.findImage(captured, template, findOptions);
                         captured.recycle();
-                        
+
                         if (p) {
-                            foundPt = p;
-                            task.cachedBounds = { x: p.x, y: p.y, width: templ.getWidth(), height: templ.getHeight() };
+                            foundImagePoint = p;
+                            task.cachedBounds = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
                             saveCurrentProfileThrottled();
                             break;
                         }
                         sleep(300);
                     }
                 }
-                
-                templ.recycle();
 
-                // --- 3. 结果 ---
-                if (foundPt) {
-                    var loc = {
-                        left: foundPt.x, top: foundPt.y, 
-                        right: foundPt.x + templ.getWidth(), bottom: foundPt.y + templ.getHeight(),
-                        centerX: function(){return this.left+(this.right-this.left)/2},
-                        centerY: function(){return this.top+(this.bottom-this.top)/2}
+                if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) {
+                    template.recycle();
+                    break;
+                }
+
+                // --- 3. 结果处理 ---
+                if (foundImagePoint) {
+                    var location = {
+                        left: foundImagePoint.x, 
+                        top: foundImagePoint.y, 
+                        right: foundImagePoint.x + template.getWidth(), 
+                        bottom: foundImagePoint.y + template.getHeight(),
+                        centerX: function () { return this.left + (this.right - this.left) / 2; },
+                        centerY: function () { return this.top + (this.bottom - this.top) / 2; }
                     };
-                    var act = task.onSuccess || { action: 'click' };
-                    handleImageSuccess(loc, act);
-                    
-                    if (act.after === 'terminate') { ui.run(() => stopExecution(`任务终止`)); break; }
-                    if (act.after === 'sequence' && act.sequenceName) {
-                        var sub = sequences[act.sequenceName];
-                        if (sub) executeSequence(sub.tasks, sub.name, contextType, depth + 1);
+
+                    var successAction = task.onSuccess || { action: 'click', after: 'none' };
+                    var taskActionType = successAction.action;
+
+                    // 处理主动作
+                    handleImageSuccess(location, successAction);
+
+                    // 处理后续操作
+                    if (successAction.after === 'terminate') {
+                        logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 终止序列。`);
+                        ui.run(() => stopExecution(`任务 [${taskNameLog}] 触发终止`));
+                        break; 
+                    } else if (successAction.after === 'sequence') {
+                        if (successAction.sequenceName) {
+                            logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 调用子序列。`);
+                            // 【修复点】使用 var subSeq
+                            var subSeq = sequences[successAction.sequenceName];
+                            if (subSeq) {
+                                executeSequence(subSeq.tasks, `子序列 (${subSeq.name})`, contextType, depth + 1);
+                            } else {
+                                logErrorToScreen(`错误: 找不到子序列 ${successAction.sequenceName}`);
+                            }
+                        }
                     }
+
                 } else {
+                    logToScreen(`超时 ${imageTimeout}ms 未找到图片 "${task.imageFile}"`);
                     handleGeneralFailAction(task.onFail, '找图失败', sourceName, contextType, depth);
                 }
+                
+                template.recycle();
                 break;
             }
             case 'wait_for_dissapear': {
-                // 等待消失任务也需要防止越界
-                executeWaitDisappearTask(task, sourceName, contextType);
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${task.name || `等待'${task.target}'消失`}`);
+                toast(`执行: ${task.name}`);
+
+                let targetFound = false;
+                let findStartTime = new Date().getTime();
+                const findTimeout = task.findTimeout || 5000;
+                let findOptions = {};
+                let imageTemplate = null;
+
+                // 准备查找选项和图片模板
+                if (task.targetType === 'image') {
+                    let imagePath = files.join(CONSTANTS.FILES.IMAGE_DIR, task.target);
+                    if (!files.exists(imagePath)) {
+                        logErrorToScreen(`错误: 图片文件不存在 at ${imagePath}`);
+                        handleGeneralFailAction(task.onFail, '等待消失-文件不存在', sourceName, contextType, depth);
+                        break;
+                    }
+                    imageTemplate = images.read(imagePath);
+                    if (!imageTemplate) {
+                        logErrorToScreen(`错误: 无法读取图片文件 at ${imagePath}`);
+                        handleGeneralFailAction(task.onFail, '等待消失-无法读取', sourceName, contextType, depth);
+                        break;
+                    }
+                    // =========== 🔴【添加这段代码】开始 ===========
+                    if (appSettings.useGrayscale) {
+                        try {
+                            let grayTemp = images.grayscale(imageTemplate);
+                            imageTemplate.recycle();
+                            imageTemplate = grayTemp;
+                        } catch(e) {}
+                    }
+                    // =========== 🔴【添加这段代码】结束 ===========
+                    findOptions = { threshold: task.threshold || 0.8 };
+                } else { // ocr
+                    findOptions = { useSlim: true };
+                }
+
+                if (task.search_area && task.search_area.length === 4) {
+                    // --- 核心修复：使用 calculatePaddedRegion 来限制 search_area ---
+                    let [x1, y1, x2, y2] = task.search_area;
+                    let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
+                    findOptions.region = calculatePaddedRegion(searchBounds, 0); // 0 padding
+                    // --- 修复结束 ---
+                }
+
+                // 1. 查找阶段: 等待目标出现
+                logToScreen(`...阶段1: 查找目标 "${task.target}" (超时: ${findTimeout}ms)`);
+                while (new Date().getTime() - findStartTime < findTimeout) {
+                    if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
+
+                    let captured = captureAndProcessScreen();
+                    if (!captured) {
+                        logToScreen("截图失败，稍后重试...");
+                        sleep(500);
+                        if (threads.currentThread().isInterrupted()) break;
+                        continue;
+                    }
+
+                    let result = null;
+                    if (task.targetType === 'image') {
+                        result = images.findImage(captured, imageTemplate, findOptions);
+                    } else { // ocr
+                        let ocrResults = ocr.paddle.detect(captured, findOptions);
+                        result = ocrResults.find(r => r.label.includes(task.target));
+                    }
+                    captured.recycle();
+
+                    if (result) {
+                        targetFound = true;
+                        logToScreen(`...目标 "${task.target}" 已找到，进入下一阶段。`);
+                        break;
+                    }
+                    sleep(300); // 检查间隔
+                    if (threads.currentThread().isInterrupted()) break;
+                }
+
+                if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) {
+                    if (imageTemplate) imageTemplate.recycle();
+                    break;
+                }
+
+                if (!targetFound) {
+                    logToScreen(`...阶段1失败: 在 ${findTimeout}ms 内未找到目标 "${task.target}"。`);
+                    handleGeneralFailAction(task.onFail, 'onFail (未找到)', sourceName, contextType, depth);
+                    if (imageTemplate) imageTemplate.recycle();
+                    break;
+                }
+
+                // 2. 消失阶段: 等待目标消失
+                let targetDisappeared = false;
+                let disappearStartTime = new Date().getTime();
+                const disappearTimeout = task.disappearTimeout || 10000;
+
+                logToScreen(`...阶段2: 等待目标 "${task.target}" 消失 (超时: ${disappearTimeout}ms)`);
+                while (new Date().getTime() - disappearStartTime < disappearTimeout) {
+                    if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
+
+                    let captured = captureAndProcessScreen();
+                    if (!captured) {
+                        logToScreen("截图失败，稍后重试...");
+                        sleep(500);
+                        if (threads.currentThread().isInterrupted()) break;
+                        continue;
+                    }
+
+                    let result = null;
+                    if (task.targetType === 'image') {
+                        result = images.findImage(captured, imageTemplate, findOptions);
+                    } else { // ocr
+                        let ocrResults = ocr.paddle.detect(captured, findOptions);
+                        result = ocrResults.find(r => r.label.includes(task.target));
+                    }
+                    captured.recycle();
+
+                    if (!result) {
+                        targetDisappeared = true;
+                        logToScreen(`...目标 "${task.target}" 已消失。`);
+                        break;
+                    }
+                    sleep(500); // 消失检查间隔
+                    if (threads.currentThread().isInterrupted()) break;
+                }
+
+                if (imageTemplate) imageTemplate.recycle();
+                if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
+
+                // 3. 动作阶段
+                if (targetDisappeared) {
+                    logToScreen(`...阶段2成功: 目标成功消失，执行成功后操作。`);
+                    handleGeneralSuccessAction(task.onSuccess, 'onSuccess', sourceName, contextType, depth);
+                } else {
+                    logToScreen(`...阶段2失败: 在 ${disappearTimeout}ms 后目标 "${task.target}" 仍未消失。`);
+                    handleGeneralFailAction(task.onTimeout, 'onTimeout (未消失)', sourceName, contextType, depth);
+                }
+
                 break;
             }
-            case 'back': back(); sleep(500); break;
-            case 'launch_app': if(task.appName) app.launchApp(task.appName); sleep(1000); break;
-            case 'execute_sequence': {
-                var sub = sequences[task.sequenceName];
-                if (sub) executeSequence(sub.tasks, sub.name, contextType, depth + 1);
-                else logErrorToScreen("找不到序列: " + task.sequenceName);
+            case 'back': {
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
+                back();
+                sleep(appSettings.clickDelayMs);
+                if (threads.currentThread().isInterrupted()) break;
+                break;
+            }
+            case 'launch_app': {
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
+                if (task.appName) {
+                    app.launchApp(task.appName);
+                    logToScreen(`已尝试启动应用: ${task.appName}`);
+                } else {
+                    logErrorToScreen(`错误: launch_app 任务未指定 appName`);
+                }
+                sleep(appSettings.clickDelayMs);
+                if (threads.currentThread().isInterrupted()) break;
                 break;
             }
             case 'start_monitor': {
-                // ... 启动监控逻辑 ...
-                var sub = sequences[task.sequenceName];
-                if(sub && !appState.activeMonitors[task.sequenceName]) {
-                    runSingleMonitorThread(sub, task.sequenceName);
-                    ui.post(()=>updateMonitorStatusUI());
+                // --- 修复 2: (并发控制) 检查是否已有 *任何* 监控在运行 ---
+                const isAnyMonitorRunning = appState.isMonitoring || Object.keys(appState.activeMonitors).length > 0;
+                if (isAnyMonitorRunning) {
+                    logErrorToScreen(`[${sourceName}] 启动监控 [${task.sequenceName}] 失败：已有其他监控正在运行。`);
+                    toast("启动监控失败：已有其他监控在运行");
+                    break; // 跳过此任务
+                }
+                // --- 修复 2 结束 ---
+
+                logToScreen(`[${sourceName}] 动态启动监控: ${task.sequenceName}`);
+                const sequenceToMonitor = sequences[task.sequenceName];
+                
+                if (sequenceToMonitor && sequenceToMonitor.executionPolicy.mode === 'monitor') {
+                    // (这个内部检查是多余的，因为上面的全局检查已经覆盖了，但保留它也无害)
+                    if (appState.activeMonitors[task.sequenceName]) {
+                        logToScreen(`警告: 监控 [${task.sequenceName}] 已在运行中，无需重复启动。`);
+                        break;
+                    }
+                    
+                    // 启动监控线程
+                    runSingleMonitorThread(sequenceToMonitor, task.sequenceName);
+                    
+                    // --- 修复 1: (UI同步) 启动后，手动更新 👁️ 按钮状态 ---
+                    updateMonitorStatusUI();
+                    // --- 修复 1 结束 ---
+
+                } else {
+                    logErrorToScreen(`错误: 找不到名为 "${task.sequenceName}" 的监控序列，或其模式不为 'monitor'`);
                 }
                 break;
             }
             case 'stop_monitor': {
-                // ... 停止监控逻辑 ...
-                 var tid = appState.activeMonitors[task.sequenceName];
-                 if(tid) {
-                     if(appState.threads[tid]) appState.threads[tid].interrupt();
-                     delete appState.activeMonitors[task.sequenceName];
-                     ui.post(()=>updateMonitorStatusUI());
-                 }
+                logToScreen(`[${sourceName}] 正在停止监控: ${task.sequenceName}`);
+                
+                const monitorThreadId = appState.activeMonitors[task.sequenceName];
+                
+                if (monitorThreadId) {
+                    // 【核心修复 1】先清理数据，再停止线程。防止线程提前终止导致状态残留。
+                    
+                    // 1. 从活动列表中移除
+                    delete appState.activeMonitors[task.sequenceName];
+                    
+                    // 2. 检查并更新全局开关状态
+                    // 如果停止的是主监控，或者当前没有任何监控在运行了，必须把总开关 isMonitoring 关掉
+                    // 这样 updateMonitorStatusUI 才能正确识别状态
+                    if (task.sequenceName === appSettings.mainMonitorKey || Object.keys(appState.activeMonitors).length === 0) {
+                        appState.isMonitoring = false;
+                        appState.timers = {}; 
+                        logToScreen("所有监控已停止，重置全局状态。");
+                    }
+
+                    // 3. 强制 UI 刷新 (放在中断线程之前)
+                    ui.post(() => {
+                        updateMonitorStatusUI();
+                        // 双重保险：强制重置图标
+                        if (!appState.isMonitoring && Object.keys(appState.activeMonitors).length === 0) {
+                            if (uiRefs.controlPanel && uiRefs.controlPanel.monitorBtn) {
+                                uiRefs.controlPanel.monitorBtn.setText("👁️");
+                                uiRefs.controlPanel.monitorStatusIcon.setVisibility(8);
+                            }
+                        }
+                    });
+                    
+                    // 4. 最后再处理线程停止
+                    if (appState.threads[monitorThreadId]) {
+                        // 如果是停止自己(当前线程)，interrupt后脚本可能随时停止，所以这步放最后
+                        if (appState.threads[monitorThreadId].isAlive()) {
+                            logToScreen(`正在终止线程: ${monitorThreadId}`);
+                            appState.threads[monitorThreadId].interrupt();
+                        }
+                        delete appState.threads[monitorThreadId];
+                    }
+                    
+                    logToScreen(`已停止监控 [${task.sequenceName}]`);
+                    
+                } else {
+                    logToScreen(`警告: 监控 [${task.sequenceName}] 未在运行，无法停止。`);
+                }
+                break;
+            }
+            case 'execute_sequence': {
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
+                const sequenceToRun = sequences[task.sequenceName];
+                if (sequenceToRun) {
+                    executeSequence(sequenceToRun.tasks, `子序列 (${sequenceToRun.name || task.sequenceName})`, contextType, depth + 1);
+                } else {
+                    logErrorToScreen(`错误: 找不到名为 "${task.sequenceName}" 的子序列`);
+                }
                 break;
             }
             case 'timer': {
-                 if(task.timerName) appState.timers[task.timerName] = Date.now() + (task.duration||0);
-                 break;
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
+                if (task.timerName && task.duration > 0) {
+                    appState.timers[task.timerName] = new Date().getTime() + task.duration;
+                    logToScreen(`...计时器 [${task.timerName}] 已启动/重置，时长: ${task.duration}ms`);
+                } else {
+                    logErrorToScreen(`...错误: 计时器任务 [${taskName}] 配置不正确 (缺少名称或时长)`);
+                }
+                break;
+            }
+            default: {
+                logErrorToScreen(`[${sourceName}] 警告: 发现未知任务类型 "${task.type}"，已跳过。`);
+                break;
             }
         }
     }
-}
-
-// 辅助函数: 独立抽取 wait_for_dissapear 以保持代码整洁
-function executeWaitDisappearTask(task, sourceName, contextType) {
-    logToScreen(`执行: 等待 "${task.target}" 消失`);
-    var start = Date.now();
-    var timeout = task.findTimeout || 5000;
-    var found = false;
-    
-    // 准备模板
-    var templ = null;
-    if (task.targetType === 'image') {
-        var p = files.join(CONSTANTS.FILES.IMAGE_DIR, task.target);
-        if (files.exists(p)) templ = images.read(p);
-    }
-
-    // 阶段1: 等待出现
-    while (Date.now() - start < timeout) {
-        if (getStopSignal(contextType)) break;
-        var captured = captureScreen();
-        if (!captured) { sleep(500); continue; }
-        
-        var opts = {};
-        if (task.search_area) {
-             var [x1,y1,x2,y2] = task.search_area;
-             opts.region = calculatePaddedRegion({left:x1, top:y1, right:x2, bottom:y2}, 0, captured.getWidth(), captured.getHeight());
-        }
-        
-        var res = false;
-        if (templ) res = images.findImage(captured, templ, opts);
-        else {
-             opts.useSlim = true;
-             var r = ocr.paddle.detect(captured, opts);
-             res = r.find(x => x.label.includes(task.target));
-        }
-        captured.recycle();
-        
-        if (res) { found = true; break; }
-        sleep(300);
-    }
-    
-    if (!found) {
-        if(templ) templ.recycle();
-        handleGeneralFailAction(task.onFail, '未出现', sourceName, contextType);
-        return;
-    }
-
-    // 阶段2: 等待消失
-    var disappearTimeout = task.disappearTimeout || 10000;
-    start = Date.now();
-    var disappeared = false;
-    
-    while (Date.now() - start < disappearTimeout) {
-        if (getStopSignal(contextType)) break;
-        var captured = captureScreen();
-        if (!captured) { sleep(500); continue; }
-        
-        var opts = {};
-        if (task.search_area) {
-             var [x1,y1,x2,y2] = task.search_area;
-             opts.region = calculatePaddedRegion({left:x1, top:y1, right:x2, bottom:y2}, 0, captured.getWidth(), captured.getHeight());
-        }
-        
-        var res = false;
-        if (templ) res = images.findImage(captured, templ, opts);
-        else {
-             opts.useSlim = true;
-             var r = ocr.paddle.detect(captured, opts);
-             res = r.find(x => x.label.includes(task.target));
-        }
-        captured.recycle();
-        
-        if (!res) { disappeared = true; break; }
-        sleep(500);
-    }
-    
-    if (templ) templ.recycle();
-    
-    if (disappeared) handleGeneralSuccessAction(task.onSuccess, '已消失', sourceName, contextType);
-    else handleGeneralFailAction(task.onTimeout, '未消失', sourceName, contextType);
+    logToScreen(`序列 [${sourceName}] 执行完毕。`);
 }
 
 function toggleSequenceExecution() {
@@ -1753,7 +1961,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 let triggerFiredInCycle = false;
                 let capturedImage = null;
                 for (let retry = 0; retry < 3; retry++) {
-                    capturedImage = captureScreen();
+                    capturedImage = captureAndProcessScreen(); // <--- 替换这里
                     if (capturedImage) break;
                     sleep(300);
                 }
@@ -1778,9 +1986,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 // 我们不再需要旧版的 mismatch/rebuild 逻辑，因为它会强制覆盖掉置顶效果。
                 
                 var ordered_final = reorderByPriority(sequence, localTriggers);
-                // 【关键】获取当前截图尺寸
-                var imgW = capturedImage.getWidth();
-                var imgH = capturedImage.getHeight();
+
                 // debug print (可选，保留用于调试)
                 try {
                     if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
@@ -1832,13 +2038,22 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                             if (files.exists(imagePath)) {
                                 template = images.read(imagePath);
                                 if (template) {
+                                    // =========== 🔴【添加这段代码】开始 ===========
+                                    // 修复: 确保模板图和截图的颜色模式一致
+                                    if (appSettings.useGrayscale) {
+                                        try {
+                                            let grayTemp = images.grayscale(template);
+                                            template.recycle(); // 释放原彩色图
+                                            template = grayTemp; // 替换为灰度图
+                                        } catch(e) {
+                                            // 极少情况转换失败，忽略
+                                        }
+                                    }
+                                    // =========== 🔴【添加这段代码】结束 ===========
                                     let p = null;
                                     // --- 关键修改: 启用缓存并使用 padding 变量 ---
                                     if (trigger.cachedBounds) { // <-- 1. 修复: 移除了 'false &&'
                                         let b = trigger.cachedBounds;
-                                        if (b.right > imgW || b.bottom > imgH) {
-                                            trigger.cachedBounds = null;
-                                        }
                                         let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
                                         let region = calculatePaddedRegion(b, padding);
                                         p = images.findImage(capturedImage, template, { region: region, threshold: trigger.threshold || 0.8 });
@@ -1875,9 +2090,6 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                         // --- 关键修改: 为 OCR 应用 padding 变量 ---
                         if (trigger.cachedBounds) {
                             let b = trigger.cachedBounds;
-                            if (b.right > imgW || b.bottom > imgH) {
-                                trigger.cachedBounds = null;
-                            }
                             // 1. 修复: 为 OCR 也应用 cachePadding 变量
                             let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
                             let cacheRegion = calculatePaddedRegion(b, padding);
@@ -4848,36 +5060,28 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
 // =================================================================================
 // 辅助函数 (Utility Functions)
 // =================================================================================
-function appendTriggerLog(sequenceName, trigger) {
+/**
+ * 【核心函数】获取屏幕截图，并根据设置自动处理灰度化
+ * 注意：此函数会返回一个新的 Image 对象，调用者必须负责 recycle()
+ */
+function captureAndProcessScreen() {
+    let raw = captureScreen();
+    if (!raw) return null;
+
+    // 如果未开启灰度化，直接返回原图
+    if (!appSettings.useGrayscale) {
+        return raw;
+    }
+
+    // 如果开启了灰度化，进行转换并回收原图
     try {
-        // 1. 检查开关
-        if (appSettings.enableTriggerLog !== true) {
-            // console.log("日志开关未开启"); // 调试用
-            return;
-        }
-
-        // 2. 准备路径
-        const logDir = files.join(CONSTANTS.FILES.ROOT_DIR, "logs");
-        files.ensureDir(logDir); // 确保 logs 文件夹存在
-        
-        const logFile = files.join(logDir, "trigger_history.txt");
-
-        // 3. 格式化
-        const now = new Date();
-        const timeStr = `${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2,'0')}-${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
-        
-        const target = trigger.target || "未知目标";
-        const action = (trigger.action && trigger.action.type) ? trigger.action.type : "无动作";
-        const logContent = `[${timeStr}] 序列:${sequenceName} | 目标:${target} | 动作:${action}\n`;
-
-        // 4. 追加写入
-        files.append(logFile, logContent);
-        
-        // 5. 【调试反馈】如果在日志选项卡看到这行，说明写入成功了
-        // logToScreen("📝 [调试] 日志已写入: " + target); 
-
+        let gray = images.grayscale(raw);
+        raw.recycle(); // 立即回收彩色原图，防止内存泄漏
+        return gray;
     } catch (e) {
-        logErrorToScreen("⚠️ 日志写入失败: " + e.message);
+        // 如果灰度化失败（极少见），返回原图作为降级方案
+        logErrorToScreen("灰度化失败: " + e);
+        return raw;
     }
 }
 // --- 5.1.2 (V7 方案): 图片创建工作流 (从主窗口启动) ---
@@ -5263,10 +5467,8 @@ function populateGraphicalSettings() {
             ui.swipeTaskColorInput.setText(appSettings.theme.taskSwipeColor);
             // --- 在这里添加新行 ---
             ui.defaultCachePaddingInput.setText(String(appSettings.defaultCachePadding || 50));
-            // 【新增】回显日志开关状态
-            ui.enableTriggerLogCheckbox.setChecked(appSettings.enableTriggerLog === true);
-            // --- 在这里添加新行 ---
-            ui.defaultCachePaddingInput.setText(String(appSettings.defaultCachePadding || 50));
+            // 【新增】回显灰度化开关状态
+            ui.useGrayscaleCheckbox.setChecked(appSettings.useGrayscale === true);
         });
     }
 }
@@ -5318,22 +5520,25 @@ function validateNumericInput(inputStr, allowFloat = false, allowSigned = false)
     }
     return true;
 }
+// =================================================================================
+// --- 在这里粘贴新函数 ---
+// =================================================================================
 /**
- * (V8 - 修复版：强制使用图片实际宽高，解决横屏越界崩溃)
- * @param {object} bounds - 原始边界
+ * (V6 - 最终版：X/Y 独立OOB检测)
+ * 计算带扩边（Padding）并限制在屏幕范围内的区域
+ * @param {object} bounds - 原始边界 (可以是 {left, top, right, bottom} 或 {x, y, width, height})
  * @param {number} padding - 扩边像素
- * @param {number} [limitW] - (可选) 限制最大宽度，务必传入截图宽度
- * @param {number} [limitH] - (可选) 限制最大高度，务必传入截图高度
+ * @returns {Array<number>} - 返回 [x, y, w, h] 格式的区域数组
  */
-function calculatePaddedRegion(bounds, padding, limitW, limitH) {
+function calculatePaddedRegion(bounds, padding) {
     try {
         let x1_orig, y1_orig, x2_orig, y2_orig;
         padding = padding || 0; 
         
-        // 【核心修复】优先使用传入的图片实际宽高，没有则回退到屏幕物理宽高
-        const maxW = limitW || getRealWidth();
-        const maxH = limitH || getRealHeight();
+        const realWidth = getRealWidth();
+        const realHeight = getRealHeight();
 
+        // 1. 根据 bounds 类型，计算出带 padding 的 "原始" 坐标
         if (bounds.left !== undefined && bounds.right !== undefined) {
             x1_orig = bounds.left - padding;
             y1_orig = bounds.top - padding;
@@ -5345,31 +5550,55 @@ function calculatePaddedRegion(bounds, padding, limitW, limitH) {
             x2_orig = bounds.x + bounds.width + padding;
             y2_orig = bounds.y + bounds.height + padding;
         } else {
-            return [0, 0, 10, 10]; 
+            logErrorToScreen("[calculatePaddedRegion] 无法识别的 bounds 格式: " + JSON.stringify(bounds));
+            return [0, 0, 10, 10]; // Failsafe
         }
         
-        // 严格钳制坐标 (0 ~ maxW-1)
-        let final_x1 = Math.max(0, Math.min(x1_orig, maxW - 1));
-        let final_y1 = Math.max(0, Math.min(y1_orig, maxH - 1));
-        let final_x2 = Math.max(0, Math.min(x2_orig, maxW));
-        let final_y2 = Math.max(0, Math.min(y2_orig, maxH));
+        let final_x1, final_y1, final_x2, final_y2;
 
-        // 防御性检查：防止翻转
-        if (final_x1 >= final_x2) final_x1 = Math.max(0, final_x2 - 1);
-        if (final_y1 >= final_y2) final_y1 = Math.max(0, final_y2 - 1);
+        // 2. 【X 轴检查】检查 X 坐标是否完全 OOB (Out-of-Bounds)
+        // (例如 x1=1560 > realWidth=1080)
+        if (x1_orig >= realWidth || x2_orig <= 0) {
+            // X 坐标已失效, 强制全宽搜索
+            logToScreen(`[calculatePaddedRegion] 检测到 X 轴OOB (x=${x1_orig}), 强制全宽搜索。`);
+            final_x1 = 0;
+            final_x2 = realWidth;
+        } else {
+            // X 坐标未失效，使用标准钳制逻辑
+            final_x1 = Math.max(0, Math.min(x1_orig, realWidth - 1));
+            final_x2 = Math.max(0, Math.min(x2_orig, realWidth));
+            // 确保 x1 < x2
+            if (final_x1 >= final_x2) {
+                final_x1 = (final_x2 > 0) ? final_x2 - 1 : 0;
+            }
+        }
 
+        // 3. 【Y 轴检查】(新!) 检查 Y 坐标是否完全 OOB
+        // (例如 y1=1800 > realHeight=1080)
+        if (y1_orig >= realHeight || y2_orig <= 0) {
+            // Y 坐标已失效, 强制全高搜索
+            logToScreen(`[calculatePaddedRegion] 检测到 Y 轴OOB (y=${y1_orig}), 强制全高搜索。`);
+            final_y1 = 0;
+            final_y2 = realHeight;
+        } else {
+            // Y 坐标未失效，使用标准钳制逻辑
+            final_y1 = Math.max(0, Math.min(y1_orig, realHeight - 1));
+            final_y2 = Math.max(0, Math.min(y2_orig, realHeight));
+            // 确保 y1 < y2
+            if (final_y1 >= final_y2) {
+                final_y1 = (final_y2 > 0) ? final_y2 - 1 : 0;
+            }
+        }
+
+        // 4. 计算最终宽高
         let w = final_x2 - final_x1;
         let h = final_y2 - final_y1;
 
-        // 【终极防御】确保 region 绝对不会超出图片边界
-        if (final_x1 + w > maxW) w = maxW - final_x1;
-        if (final_y1 + h > maxH) h = maxH - final_y1;
-
-        return [final_x1, final_y1, Math.max(1, w), Math.max(1, h)]; // 宽高至少为1
+        return [final_x1, final_y1, Math.max(0, w), Math.max(0, h)];
 
     } catch (e) {
         logErrorToScreen("[calculatePaddedRegion] Error: " + e);
-        return [0, 0, 10, 10]; 
+        return [0, 0, 10, 10]; // Failsafe
     }
 }
 // =================================================================================
