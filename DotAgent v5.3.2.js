@@ -175,6 +175,7 @@ function bumpTriggerPriority(sequence, trigger) {
         // 写入 PQ 缓存
         writePriorityQueueQuick(sequence);
         
+        
     } catch (e) {
         // 静默失败
     }
@@ -223,7 +224,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.1 公开目录版",
+    VERSION: "5.3.2 增加日志 ",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -414,6 +415,7 @@ ui.layout(
                                     <text textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}">默认缓存扩边(px):</text>
                                     <input id="defaultCachePaddingInput" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" />
                                 </horizontal>
+                                <checkbox id="enableTriggerLogCheckbox" text="启用触发器日志 (保存到文件)" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" marginTop="10" />
                                 <text text="界面定制" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" textStyle="bold" marginTop="20" />
                                 <horizontal gravity="center_vertical" marginTop="10"><text textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}">控制面板宽度:</text><input id="panelWidthInput" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" /></horizontal>
                                 <horizontal gravity="center_vertical" marginTop="10"><text textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}">目标视图大小:</text><input id="targetViewSizeInput" inputType="number" layout_weight="1" singleLine="true" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" /></horizontal>
@@ -842,6 +844,8 @@ ui.saveGraphicalSettingsBtn.click(() => {
         appSettings.targetViewSize = parseInt(targetViewSizeStr);
         // --- 3. 在这里添加新行 ---
         appSettings.defaultCachePadding = parseInt(defaultCachePaddingStr);
+        // 【新增】保存日志开关状态
+        appSettings.enableTriggerLog = ui.enableTriggerLogCheckbox.isChecked();
         appSettings.showPanelCoordinates = ui.showCoordsCheckbox.isChecked();
         appSettings.theme.targetViewColor = targetColor;
         appSettings.theme.taskClickColor = clickTaskColor;
@@ -2021,7 +2025,8 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                     if (trigger.cachedBounds) { // <-- 1. 修复: 移除了 'false &&'
                                         let b = trigger.cachedBounds;
                                         let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
-                                        let region = calculatePaddedRegion(b, padding);
+                                        //let region = calculatePaddedRegion(b, padding);
+                                        let region = calculatePaddedRegion(b, padding, capturedImage.getWidth(), capturedImage.getHeight());
                                         p = images.findImage(capturedImage, template, { region: region, threshold: trigger.threshold || 0.8 });
                                         if (!p) {
                                             toast(`...[${trigger.target}] 缓存未命中，将执行全屏扫描。`);
@@ -2058,7 +2063,8 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                             let b = trigger.cachedBounds;
                             // 1. 修复: 为 OCR 也应用 cachePadding 变量
                             let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
-                            let cacheRegion = calculatePaddedRegion(b, padding);
+                            //let cacheRegion = calculatePaddedRegion(b, padding);
+                            let cacheRegion = calculatePaddedRegion(b, padding, capturedImage.getWidth(), capturedImage.getHeight());
                             let ocrResults = ocr.paddle.detect(capturedImage, { region: cacheRegion, useSlim: true });
                             ocrTarget = ocrResults.find(r => r.label.includes(trigger.target));
                             if (!ocrTarget) {
@@ -2101,6 +2107,11 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     if (foundLocation) {
                         // --- 目标找到 (onSuccess) ---
                         executeTriggerAction(trigger, foundLocation);
+                        // ==========================================
+                        // 【新增】在这里调用日志记录
+                        // ==========================================
+                        appendTriggerLog(sequence.name, trigger);
+                        // ==========================================
                         triggerFiredInCycle = true;
                         // 优先队列：命中后前置
                         bumpTriggerPriority(sequence, trigger);
@@ -5026,7 +5037,38 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
 // =================================================================================
 // 辅助函数 (Utility Functions)
 // =================================================================================
+function appendTriggerLog(sequenceName, trigger) {
+    try {
+        // 1. 检查开关
+        if (appSettings.enableTriggerLog !== true) {
+            // console.log("日志开关未开启"); // 调试用
+            return;
+        }
 
+        // 2. 准备路径
+        const logDir = files.join(CONSTANTS.FILES.ROOT_DIR, "logs");
+        files.ensureDir(logDir); // 确保 logs 文件夹存在
+        
+        const logFile = files.join(logDir, "trigger_history.txt");
+
+        // 3. 格式化
+        const now = new Date();
+        const timeStr = `${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2,'0')}-${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
+        
+        const target = trigger.target || "未知目标";
+        const action = (trigger.action && trigger.action.type) ? trigger.action.type : "无动作";
+        const logContent = `[${timeStr}] 序列:${sequenceName} | 目标:${target} | 动作:${action}\n`;
+
+        // 4. 追加写入
+        files.append(logFile, logContent);
+        
+        // 5. 【调试反馈】如果在日志选项卡看到这行，说明写入成功了
+        // logToScreen("📝 [调试] 日志已写入: " + target); 
+
+    } catch (e) {
+        logErrorToScreen("⚠️ 日志写入失败: " + e.message);
+    }
+}
 // --- 5.1.2 (V7 方案): 图片创建工作流 (从主窗口启动) ---
 function launchImageCreationWorkflow() {
     if (appState.ui.pendingCropUri) {
@@ -5410,6 +5452,8 @@ function populateGraphicalSettings() {
             ui.swipeTaskColorInput.setText(appSettings.theme.taskSwipeColor);
             // --- 在这里添加新行 ---
             ui.defaultCachePaddingInput.setText(String(appSettings.defaultCachePadding || 50));
+            // 【新增】回显日志开关状态
+            ui.enableTriggerLogCheckbox.setChecked(appSettings.enableTriggerLog === true);
             // --- 在这里添加新行 ---
             ui.defaultCachePaddingInput.setText(String(appSettings.defaultCachePadding || 50));
         });
@@ -5467,21 +5511,21 @@ function validateNumericInput(inputStr, allowFloat = false, allowSigned = false)
 // --- 在这里粘贴新函数 ---
 // =================================================================================
 /**
- * (V6 - 最终版：X/Y 独立OOB检测)
- * 计算带扩边（Padding）并限制在屏幕范围内的区域
- * @param {object} bounds - 原始边界 (可以是 {left, top, right, bottom} 或 {x, y, width, height})
+ * (V7 - 修复版：支持传入限制宽高，防止 OCR 越界)
+ * @param {object} bounds - 原始边界
  * @param {number} padding - 扩边像素
- * @returns {Array<number>} - 返回 [x, y, w, h] 格式的区域数组
+ * @param {number} [limitW] - (可选) 限制最大宽度，通常传图片宽度
+ * @param {number} [limitH] - (可选) 限制最大高度，通常传图片高度
  */
-function calculatePaddedRegion(bounds, padding) {
+function calculatePaddedRegion(bounds, padding, limitW, limitH) {
     try {
         let x1_orig, y1_orig, x2_orig, y2_orig;
         padding = padding || 0; 
         
-        const realWidth = getRealWidth();
-        const realHeight = getRealHeight();
+        // 【修复】优先使用传入的图片实际宽高，如果没有则回退到屏幕物理宽高
+        const maxW = limitW || getRealWidth();
+        const maxH = limitH || getRealHeight();
 
-        // 1. 根据 bounds 类型，计算出带 padding 的 "原始" 坐标
         if (bounds.left !== undefined && bounds.right !== undefined) {
             x1_orig = bounds.left - padding;
             y1_orig = bounds.top - padding;
@@ -5493,55 +5537,31 @@ function calculatePaddedRegion(bounds, padding) {
             x2_orig = bounds.x + bounds.width + padding;
             y2_orig = bounds.y + bounds.height + padding;
         } else {
-            logErrorToScreen("[calculatePaddedRegion] 无法识别的 bounds 格式: " + JSON.stringify(bounds));
-            return [0, 0, 10, 10]; // Failsafe
+            return [0, 0, 10, 10]; 
         }
         
-        let final_x1, final_y1, final_x2, final_y2;
+        // 【修复】严格钳制坐标 (0 ~ maxW-1)
+        let final_x1 = Math.max(0, Math.min(x1_orig, maxW - 1));
+        let final_y1 = Math.max(0, Math.min(y1_orig, maxH - 1));
+        let final_x2 = Math.max(0, Math.min(x2_orig, maxW));
+        let final_y2 = Math.max(0, Math.min(y2_orig, maxH));
 
-        // 2. 【X 轴检查】检查 X 坐标是否完全 OOB (Out-of-Bounds)
-        // (例如 x1=1560 > realWidth=1080)
-        if (x1_orig >= realWidth || x2_orig <= 0) {
-            // X 坐标已失效, 强制全宽搜索
-            logToScreen(`[calculatePaddedRegion] 检测到 X 轴OOB (x=${x1_orig}), 强制全宽搜索。`);
-            final_x1 = 0;
-            final_x2 = realWidth;
-        } else {
-            // X 坐标未失效，使用标准钳制逻辑
-            final_x1 = Math.max(0, Math.min(x1_orig, realWidth - 1));
-            final_x2 = Math.max(0, Math.min(x2_orig, realWidth));
-            // 确保 x1 < x2
-            if (final_x1 >= final_x2) {
-                final_x1 = (final_x2 > 0) ? final_x2 - 1 : 0;
-            }
-        }
+        // 防御性检查：防止翻转
+        if (final_x1 >= final_x2) final_x1 = Math.max(0, final_x2 - 1);
+        if (final_y1 >= final_y2) final_y1 = Math.max(0, final_y2 - 1);
 
-        // 3. 【Y 轴检查】(新!) 检查 Y 坐标是否完全 OOB
-        // (例如 y1=1800 > realHeight=1080)
-        if (y1_orig >= realHeight || y2_orig <= 0) {
-            // Y 坐标已失效, 强制全高搜索
-            logToScreen(`[calculatePaddedRegion] 检测到 Y 轴OOB (y=${y1_orig}), 强制全高搜索。`);
-            final_y1 = 0;
-            final_y2 = realHeight;
-        } else {
-            // Y 坐标未失效，使用标准钳制逻辑
-            final_y1 = Math.max(0, Math.min(y1_orig, realHeight - 1));
-            final_y2 = Math.max(0, Math.min(y2_orig, realHeight));
-            // 确保 y1 < y2
-            if (final_y1 >= final_y2) {
-                final_y1 = (final_y2 > 0) ? final_y2 - 1 : 0;
-            }
-        }
-
-        // 4. 计算最终宽高
         let w = final_x2 - final_x1;
         let h = final_y2 - final_y1;
 
-        return [final_x1, final_y1, Math.max(0, w), Math.max(0, h)];
+        // 【终极防御】确保 region 不会超出图片边界
+        if (final_x1 + w > maxW) w = maxW - final_x1;
+        if (final_y1 + h > maxH) h = maxH - final_y1;
+
+        return [final_x1, final_y1, Math.max(1, w), Math.max(1, h)]; // 宽高至少为1
 
     } catch (e) {
         logErrorToScreen("[calculatePaddedRegion] Error: " + e);
-        return [0, 0, 10, 10]; // Failsafe
+        return [0, 0, 10, 10]; 
     }
 }
 // =================================================================================
