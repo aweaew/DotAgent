@@ -223,7 +223,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.4 监控图片坐标越界",
+    VERSION: "5.3.5 启动切换app优化",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -1548,15 +1548,56 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 break;
             }
             case 'launch_app': {
-                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
-                if (task.appName) {
-                    app.launchApp(task.appName);
-                    logToScreen(`已尝试启动应用: ${task.appName}`);
-                } else {
-                    logErrorToScreen(`错误: launch_app 任务未指定 appName`);
+                logToScreen(`[${sourceName}] 任务 ${i + 1}: 智能启动应用...`);
+                
+                let targetAppName = task.appName;
+                let targetPackage = task.packageName;
+
+                // 1. 获取目标包名 (如果只给了名字，就自动查包名)
+                if (!targetPackage && targetAppName) {
+                    targetPackage = app.getPackageName(targetAppName);
                 }
-                sleep(appSettings.clickDelayMs);
-                if (threads.currentThread().isInterrupted()) break;
+
+                if (!targetPackage) {
+                    logErrorToScreen(`无法获取应用包名: ${targetAppName || '未指定'}`);
+                    break;
+                }
+
+                // 2. 获取当前前台应用的包名
+                let currPkg = currentPackage();
+
+                // 3. 判断逻辑
+                if (currPkg === targetPackage) {
+                    // A. 如果已经是目标应用 -> 不操作 (丝滑跳过)
+                    logToScreen(`✅ 当前已在 [${targetAppName || targetPackage}]，无需操作。`);
+                    
+                } else {
+                    // B. 如果不是 -> “关闭”当前(回桌面) -> 启动新应用
+                    logToScreen(`🔄 切换应用: ${targetAppName || targetPackage}`);
+                    
+                    // 模拟“关闭”当前应用的效果（回桌面清理前台上下文）
+                    home(); 
+                    sleep(800);
+
+                    // 启动目标应用
+                    if (targetAppName) {
+                        app.launchApp(targetAppName);
+                    } else {
+                        app.launchPackage(targetPackage);
+                    }
+                    
+                    // 等待应用启动完成 (默认5秒)
+                    let waitTime = task.wait || 5000; 
+                    sleep(waitTime);
+                    
+                    // 双重检查：确保真的启动成功了
+                    if (currentPackage() !== targetPackage) {
+                        logErrorToScreen("⚠️ 启动可能未成功，尝试二次激活...");
+                        if (targetAppName) app.launchApp(targetAppName);
+                        else app.launchPackage(targetPackage);
+                        sleep(3000);
+                    }
+                }
                 break;
             }
             case 'start_monitor': {
@@ -1954,14 +1995,8 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     sequence._failCount = 0;
                 }
 
-                // 🔥【调试】获取并打印尺寸 🔥
                 const imgW = capturedImage.getWidth();
                 const imgH = capturedImage.getHeight();
-                
-                // 偶尔打印一次尺寸确认
-                if (Math.random() < 0.05) {
-                    // logToScreen(`[调试-图片尺寸] w=${imgW}, h=${imgH}`);
-                }
 
                 // ================== 🔰 内存安全层 ==================
                 try {
@@ -1997,15 +2032,14 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                         }
 
                                         let p = null;
-                                        // 缓存搜索
+                                        // 缓存搜索 (带 region)
                                         if (trigger.cachedBounds) {
                                             let b = trigger.cachedBounds;
                                             let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
-                                            // 🔥 传入 imgW
                                             let region = calculatePaddedRegion(b, padding, imgW, imgH);
                                             p = images.findImage(capturedImage, template, { region: region, threshold: trigger.threshold || 0.8 });
                                         }
-                                        // 全屏搜索
+                                        // 全屏/SearchArea
                                         if (!p) {
                                             let findOptions = { threshold: trigger.threshold || 0.8 };
                                             if (trigger.search_area && trigger.search_area.length === 4) {
@@ -2026,36 +2060,76 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                         } 
                         else if (trigger.type === 'ocr') {
                             let ocrTarget = null;
-                            // 缓存搜索
+                            
+                            // 🟢 策略A：缓存搜索 (手动裁剪版 - 彻底修复越界bug)
                             if (trigger.cachedBounds) {
                                 let b = trigger.cachedBounds;
                                 let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
                                 
-                                // 🔥 传入 imgW
-                                let cacheRegion = calculatePaddedRegion(b, padding, imgW, imgH);
-                                
-                                // --- 🔴 调试日志 C：OCR调用前 ---
-                                if (cacheRegion[0] + cacheRegion[2] > imgW) {
-                                    logErrorToScreen(`❌ [严重错误] OCR Region 越界: x=${cacheRegion[0]} w=${cacheRegion[2]} sum=${cacheRegion[0]+cacheRegion[2]} > imgW=${imgW}`);
+                                // 1. 计算裁剪区域
+                                let r = calculatePaddedRegion(b, padding, imgW, imgH);
+                                // r = [x, y, w, h]
+
+                                // 2. 手动裁剪小图片 (clip)
+                                let subImg = null;
+                                try {
+                                    subImg = images.clip(capturedImage, r[0], r[1], r[2], r[3]);
+                                    
+                                    // 3. 识别小图片 (不传 region 参数)
+                                    let ocrResults = ocr.paddle.detect(subImg, { useSlim: true });
+                                    
+                                    // 4. 坐标回补 (将小图坐标转换为大图坐标)
+                                    ocrTarget = ocrResults.find(res => res.label.includes(trigger.target));
+                                    
+                                    if (ocrTarget) {
+                                        // 这里的 bounds 是相对 subImg 的，加上偏移量 r[0], r[1]
+                                        ocrTarget.bounds.left += r[0];
+                                        ocrTarget.bounds.top += r[1];
+                                        ocrTarget.bounds.right += r[0];
+                                        ocrTarget.bounds.bottom += r[1];
+                                    }
+                                } catch(e) {
+                                    // 裁剪或识别异常忽略
+                                } finally {
+                                    if (subImg) subImg.recycle(); // 必须回收小图
                                 }
-                                 logErrorToScreen(`❌ [严重错误] OCR Region 越界: x=${cacheRegion[0]} w=${cacheRegion[2]} sum=${cacheRegion[0]+cacheRegion[2]} > imgW=${imgW}`);
-                                let ocrResults = ocr.paddle.detect(capturedImage, { region: cacheRegion, useSlim: true });
-                                ocrTarget = ocrResults.find(r => r.label.includes(trigger.target));
                             }
-                            // 全屏搜索
+
+                            // 🟢 策略B：SearchArea 或 全屏搜索 (手动裁剪版)
                             if (!ocrTarget) {
-                                let ocrOptions = { useSlim: true };
+                                let searchRegion = null;
                                 if (trigger.search_area && trigger.search_area.length === 4) {
-                                    ocrOptions.region = calculatePaddedRegion(trigger.search_area, 0, imgW, imgH);
+                                    searchRegion = calculatePaddedRegion(trigger.search_area, 0, imgW, imgH);
                                 }
-                                let ocrResults = ocr.paddle.detect(capturedImage, ocrOptions);
-                                ocrTarget = ocrResults.find(r => r.label.includes(trigger.target));
+
+                                if (searchRegion) {
+                                    // 有指定区域 -> 裁剪后识别
+                                    let subImg = null;
+                                    try {
+                                        subImg = images.clip(capturedImage, searchRegion[0], searchRegion[1], searchRegion[2], searchRegion[3]);
+                                        let ocrResults = ocr.paddle.detect(subImg, { useSlim: true });
+                                        ocrTarget = ocrResults.find(res => res.label.includes(trigger.target));
+                                        if (ocrTarget) {
+                                            ocrTarget.bounds.left += searchRegion[0];
+                                            ocrTarget.bounds.top += searchRegion[1];
+                                            ocrTarget.bounds.right += searchRegion[0];
+                                            ocrTarget.bounds.bottom += searchRegion[1];
+                                        }
+                                    } catch(e) {} finally { if (subImg) subImg.recycle(); }
+                                } else {
+                                    // 全屏识别 (直接跑)
+                                    let ocrResults = ocr.paddle.detect(capturedImage, { useSlim: true });
+                                    ocrTarget = ocrResults.find(res => res.label.includes(trigger.target));
+                                }
+
                                 if (ocrTarget) {
+                                    // 更新缓存
                                     let b = ocrTarget.bounds;
                                     trigger.cachedBounds = { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
                                     saveCurrentProfileThrottled();
                                 }
                             }
+
                             if (ocrTarget) {
                                 let b = ocrTarget.bounds;
                                 foundLocation = { x: b.left, y: b.top, width: b.width(), height: b.height() };
