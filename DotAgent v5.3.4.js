@@ -223,7 +223,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.3 监控图片内存安全回收",
+    VERSION: "5.3.4 监控图片坐标越界",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -1890,19 +1890,14 @@ function runSingleMonitorThread(sequence, sequenceKey) {
     let monitorThread = threads.start(function () {
         logToScreen(`监控序列 [${sequence.name}] 线程已启动 (ID: ${monitorThreadId})。`);
 
+        // --- 1. 预热 ---
         let warmedUp = false;
         for (let i = 0; i < 3; i++) {
             let img = captureScreen();
-            if (img) {
-                img.recycle();
-                warmedUp = true;
-                break;
-            }
+            if (img) { img.recycle(); warmedUp = true; break; }
             sleep(500);
         }
-        if (!warmedUp) {
-            logErrorToScreen("⚠️ 截图预热失败，可能导致首次触发器失效！");
-        }
+        if (!warmedUp) logErrorToScreen("⚠️ 截图预热失败");
 
         sleep(1000);
         if (threads.currentThread().isInterrupted()) return;
@@ -1911,52 +1906,34 @@ function runSingleMonitorThread(sequence, sequenceKey) {
         const interval = sequence.executionPolicy.interval || 1000;
         let triggerCooldowns = {};
 
+        // --- 2. 主循环 ---
         while (!threads.currentThread().isInterrupted()) {
-            // 每轮首行确保 PQ 与触发器集合一致
+            
+            // (PQ 维护逻辑保持不变)
             try {
                 try { cleanupPriorityQueue(sequence); } catch (e) { }
-                if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
+                const __curSig = __stableHash(sequence.triggers || []);
+                if (__curSig !== __triggersSig) {
+                    __triggersSig = __curSig;
+                    try { cleanupPriorityQueue(sequence); } catch (e) { }
                     try {
-                        logToScreen('[Watcher-Start] pq=' + JSON.stringify(sequence.priorityQueue || []).slice(0, 200) + ' ver=' + (sequence.__priorityVersion || 0));
+                        const liveIds = new Set(((sequence.triggers || [])).map(getTriggerId));
+                        Object.keys(triggerCooldowns || {}).forEach(k => { if (!liveIds.has(k)) delete triggerCooldowns[k]; });
                     } catch (e) { }
                 }
-            } catch (e) { }
-
-            const __curSig = __stableHash(sequence.triggers || []);
-            if (__curSig !== __triggersSig) {
-                __triggersSig = __curSig;
-                try { cleanupPriorityQueue(sequence); } catch (e) { }
-                try {
-                    const liveIds = new Set(((sequence.triggers || [])).map(getTriggerId));
-                    Object.keys(triggerCooldowns || {}).forEach(k => { if (!liveIds.has(k)) delete triggerCooldowns[k]; });
-                } catch (e) { }
-                try { logToScreen('🔄 触发器集合已变更，已热更新。'); } catch (e) { }
-            }
-
-            // PQ 热更新检查
-            try {
                 var __pqObj = tryLoadPriorityQueueQuickIfNewer(sequence);
                 if (__pqObj && Array.isArray(__pqObj.priorityQueue)) {
-                    try {
-                        const old = sequence.priorityQueue || [];
-                        sequence.priorityQueue = __pqObj.priorityQueue.slice();
-                        sequence.__priorityVersion = (sequence.__priorityVersion || 0) + 1;
-                        logToScreen(`[PQ merge] loaded quick PQ (len=${sequence.priorityQueue.length}) ts=${__pqObj.ts}`);
-                    } catch (e) {
-                        try { logErrorToScreen("[PQ merge err] " + e); } catch (e) { }
-                    }
+                    sequence.priorityQueue = __pqObj.priorityQueue.slice();
+                    sequence.__priorityVersion = (sequence.__priorityVersion || 0) + 1;
                 }
             } catch (e) { }
 
-            // 每轮取一次快照
             const localTriggers = Array.isArray(sequence.triggers) ? sequence.triggers.slice() : [];
-            
-            // 🔴 关键点1：变量声明在 try 外面
             let capturedImage = null; 
             let triggerFiredInCycle = false;
 
             try {
-                // 截图逻辑
+                // --- 截图 ---
                 for (let retry = 0; retry < 3; retry++) {
                     capturedImage = captureAndProcessScreen(); 
                     if (capturedImage) break;
@@ -1964,11 +1941,10 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 }
                 
                 if (!capturedImage) {
-                    logErrorToScreen(`[${sequence.name}] 连续截图失败，跳过本轮。`);
+                    logErrorToScreen(`[${sequence.name}] 连续截图失败`);
                     if (!sequence._failCount) sequence._failCount = 0;
                     sequence._failCount++;
                     if (sequence._failCount >= 5) {
-                        logErrorToScreen(`[${sequence.name}] 截图服务可能异常，请重启脚本。`);
                         stopMonitoring("截图服务异常");
                         return;
                     }
@@ -1978,18 +1954,18 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     sequence._failCount = 0;
                 }
 
-                // ================== 🔰 内存安全层开始 ==================
-                // 这里的 try...finally 确保图片一定会被回收
+                // 🔥【调试】获取并打印尺寸 🔥
+                const imgW = capturedImage.getWidth();
+                const imgH = capturedImage.getHeight();
+                
+                // 偶尔打印一次尺寸确认
+                if (Math.random() < 0.05) {
+                    // logToScreen(`[调试-图片尺寸] w=${imgW}, h=${imgH}`);
+                }
+
+                // ================== 🔰 内存安全层 ==================
                 try {
                     var ordered_final = reorderByPriority(sequence, localTriggers);
-
-                    // Debug print
-                    try {
-                        if (typeof __PQ_DEBUG !== 'undefined' && __PQ_DEBUG) {
-                            var debugNames = ordered_final.slice(0, 5).map(t => (t.isTopPriority ? "🔥" : "") + (t.name || t.target || "unnamed"));
-                            logToScreen(`[Watcher] Final Order: ${debugNames.join(', ')}`);
-                        }
-                    } catch (e) { }
 
                     ordered_final.forEach(function (trigger) {
                         if (trigger.enabled === false) return;
@@ -1999,18 +1975,12 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                         const cooldownEndTime = triggerCooldowns[triggerId];
                         const realNowTime = new Date().getTime();
 
-                        if (cooldownEndTime && realNowTime < cooldownEndTime) {
-                            // const remainingMs = cooldownEndTime - realNowTime;
-                            // logToScreen(`[Debug Cooldown] [${triggerId}] 冷却中... 剩余: ${remainingMs} ms`);
-                            return;
-                        }
-
-                        if (cooldownEndTime && realNowTime >= cooldownEndTime) {
-                            delete triggerCooldowns[triggerId];
-                        }
+                        if (cooldownEndTime && realNowTime < cooldownEndTime) return;
+                        if (cooldownEndTime && realNowTime >= cooldownEndTime) delete triggerCooldowns[triggerId];
 
                         let foundLocation = null;
 
+                        // --- 识别逻辑 ---
                         if (trigger.type === 'image') {
                             let template = null;
                             try {
@@ -2018,7 +1988,6 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                 if (files.exists(imagePath)) {
                                     template = images.read(imagePath);
                                     if (template) {
-                                        // 灰度化兼容修复
                                         if (appSettings.useGrayscale) {
                                             try {
                                                 let grayTemp = images.grayscale(template);
@@ -2028,21 +1997,19 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                         }
 
                                         let p = null;
+                                        // 缓存搜索
                                         if (trigger.cachedBounds) {
                                             let b = trigger.cachedBounds;
                                             let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
-                                            let region = calculatePaddedRegion(b, padding);
+                                            // 🔥 传入 imgW
+                                            let region = calculatePaddedRegion(b, padding, imgW, imgH);
                                             p = images.findImage(capturedImage, template, { region: region, threshold: trigger.threshold || 0.8 });
-                                            if (!p) {
-                                                // toast(`...[${trigger.target}] 缓存未命中`);
-                                            }
                                         }
+                                        // 全屏搜索
                                         if (!p) {
                                             let findOptions = { threshold: trigger.threshold || 0.8 };
                                             if (trigger.search_area && trigger.search_area.length === 4) {
-                                                let [x1, y1, x2, y2] = trigger.search_area;
-                                                let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
-                                                findOptions.region = calculatePaddedRegion(searchBounds, 0);
+                                                findOptions.region = calculatePaddedRegion(trigger.search_area, 0, imgW, imgH);
                                             }
                                             p = images.findImage(capturedImage, template, findOptions);
                                             if (p) {
@@ -2050,29 +2017,36 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                                 saveCurrentProfileThrottled();
                                             }
                                         }
-                                        if (p) {
-                                            foundLocation = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
-                                        }
+                                        if (p) foundLocation = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
                                     }
                                 }
                             } finally {
                                 if (template) template.recycle();
                             }
-                        } else if (trigger.type === 'ocr') {
+                        } 
+                        else if (trigger.type === 'ocr') {
                             let ocrTarget = null;
+                            // 缓存搜索
                             if (trigger.cachedBounds) {
                                 let b = trigger.cachedBounds;
                                 let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
-                                let cacheRegion = calculatePaddedRegion(b, padding);
+                                
+                                // 🔥 传入 imgW
+                                let cacheRegion = calculatePaddedRegion(b, padding, imgW, imgH);
+                                
+                                // --- 🔴 调试日志 C：OCR调用前 ---
+                                if (cacheRegion[0] + cacheRegion[2] > imgW) {
+                                    logErrorToScreen(`❌ [严重错误] OCR Region 越界: x=${cacheRegion[0]} w=${cacheRegion[2]} sum=${cacheRegion[0]+cacheRegion[2]} > imgW=${imgW}`);
+                                }
+                                 logErrorToScreen(`❌ [严重错误] OCR Region 越界: x=${cacheRegion[0]} w=${cacheRegion[2]} sum=${cacheRegion[0]+cacheRegion[2]} > imgW=${imgW}`);
                                 let ocrResults = ocr.paddle.detect(capturedImage, { region: cacheRegion, useSlim: true });
                                 ocrTarget = ocrResults.find(r => r.label.includes(trigger.target));
                             }
+                            // 全屏搜索
                             if (!ocrTarget) {
                                 let ocrOptions = { useSlim: true };
                                 if (trigger.search_area && trigger.search_area.length === 4) {
-                                    let [x1, y1, x2, y2] = trigger.search_area;
-                                    let searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
-                                    ocrOptions.region = calculatePaddedRegion(searchBounds, 0);
+                                    ocrOptions.region = calculatePaddedRegion(trigger.search_area, 0, imgW, imgH);
                                 }
                                 let ocrResults = ocr.paddle.detect(capturedImage, ocrOptions);
                                 ocrTarget = ocrResults.find(r => r.label.includes(trigger.target));
@@ -2086,15 +2060,16 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                 let b = ocrTarget.bounds;
                                 foundLocation = { x: b.left, y: b.top, width: b.width(), height: b.height() };
                             }
-                        } else if (trigger.type === 'timer_end') {
+                        } 
+                        else if (trigger.type === 'timer_end') {
                             const timerName = trigger.target;
                             if (appState.timers[timerName] && realNowTime > appState.timers[timerName]) {
-                                logToScreen(`...计时器 [${timerName}] 已到期。`);
                                 foundLocation = { x: 0, y: 0, width: 0, height: 0 };
                                 delete appState.timers[timerName];
                             }
                         }
 
+                        // --- 结果处理 ---
                         if (foundLocation) {
                             executeTriggerAction(trigger, foundLocation);
                             triggerFiredInCycle = true;
@@ -2111,37 +2086,27 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     });
 
                 } finally {
-                    // 🔴 关键点2：这里是内存保险
-                    // 无论 try 里面发生了报错(catch) 还是正常运行，这里一定会执行
                     if (capturedImage && !capturedImage.isRecycled()) {
                         capturedImage.recycle();
-                        capturedImage = null; // 置空防止重复引用
+                        capturedImage = null; 
                     }
                 }
-                // ================== 🔰 内存安全层结束 ==================
+                // ================== 🔰 内存安全层 END ==================
 
-
-                // 后续逻辑 (图片已回收)
                 if (!triggerFiredInCycle && sequence.tasks && sequence.tasks.length > 0) {
-                    logToScreen(`[${sequence.name}] 未触发条件，执行默认任务...`);
-                    executeSequence(sequence.tasks, `监控序列 (${sequence.name}) 的未命中任务`, 'monitor');
+                    executeSequence(sequence.tasks, `监控序列 (${sequence.name})`, 'monitor');
                 }
 
                 if (new Date().getTime() % 30000 < interval) {
-                    try {
-                        java.lang.System.gc();
-                        logToScreen("🧹 已执行内存清理");
-                    } catch (e) {}
+                    try { java.lang.System.gc(); } catch (e) {}
                 }
 
             } catch (e) {
                 if (e instanceof java.lang.InterruptedException) break;
-                // 这里如果报错，因为有上面的 finally，图片也肯定已经被回收了，安全！
                 logErrorToScreen(`监控线程 [${sequence.name}] 错误: ${e}`);
             }
             sleep(interval);
         }
-        logToScreen(`监控序列 [${sequence.name}] 线程已停止。`);
     });
 
     appState.threads[monitorThreadId] = monitorThread;
@@ -5489,81 +5454,65 @@ function validateNumericInput(inputStr, allowFloat = false, allowSigned = false)
 // --- 在这里粘贴新函数 ---
 // =================================================================================
 /**
- * (V6 - 最终版：X/Y 独立OOB检测)
- * 计算带扩边（Padding）并限制在屏幕范围内的区域
- * @param {object} bounds - 原始边界 (可以是 {left, top, right, bottom} 或 {x, y, width, height})
- * @param {number} padding - 扩边像素
- * @returns {Array<number>} - 返回 [x, y, w, h] 格式的区域数组
+ * (V9 - 调试版：强制图片尺寸钳制 + 详细日志)
  */
-function calculatePaddedRegion(bounds, padding) {
+function calculatePaddedRegion(bounds, padding, imgW, imgH) {
     try {
         let x1_orig, y1_orig, x2_orig, y2_orig;
         padding = padding || 0; 
         
-        const realWidth = getRealWidth();
-        const realHeight = getRealHeight();
+        // 1. 获取限制尺寸
+        const limitW = imgW || getRealWidth();
+        const limitH = imgH || getRealHeight();
 
-        // 1. 根据 bounds 类型，计算出带 padding 的 "原始" 坐标
+        // 2. 解析原始坐标
         if (bounds.left !== undefined && bounds.right !== undefined) {
             x1_orig = bounds.left - padding;
             y1_orig = bounds.top - padding;
             x2_orig = bounds.right + padding;
             y2_orig = bounds.bottom + padding;
-        } else if (bounds.x !== undefined && bounds.y !== undefined && bounds.width !== undefined && bounds.height !== undefined) {
+        } else if (bounds.x !== undefined && bounds.width !== undefined) {
             x1_orig = bounds.x - padding;
             y1_orig = bounds.y - padding;
             x2_orig = bounds.x + bounds.width + padding;
             y2_orig = bounds.y + bounds.height + padding;
+        } else if (Array.isArray(bounds) && bounds.length === 4) {
+             x1_orig = bounds[0] - padding;
+             y1_orig = bounds[1] - padding;
+             x2_orig = bounds[2] + padding;
+             y2_orig = bounds[3] + padding;
         } else {
-            logErrorToScreen("[calculatePaddedRegion] 无法识别的 bounds 格式: " + JSON.stringify(bounds));
-            return [0, 0, 10, 10]; // Failsafe
+            return [0, 0, 10, 10];
         }
+
+        // --- 🔴 调试日志 A：输出原始输入 ---
+        // 只在坐标异常大时打印，避免刷屏
+        if (x1_orig > limitW - 100 || x2_orig > limitW) {
+            logToScreen(`[⚠️调试-计算前] 原始: x1=${x1_orig}, x2=${x2_orig} | 限制宽: ${limitW} (来源: ${imgW ? "截图" : "屏幕"})`);
+        }
+
+        // 3. 强制钳制 (关键修复逻辑)
+        // 确保 x1 最大只能是 limitW - 1 (例如 1079)
+        let final_x1 = Math.max(0, Math.min(x1_orig, limitW - 1));
+        // 确保 x2 最大只能是 limitW (例如 1080)
+        let final_x2 = Math.max(final_x1 + 1, Math.min(x2_orig, limitW));
         
-        let final_x1, final_y1, final_x2, final_y2;
+        let final_y1 = Math.max(0, Math.min(y1_orig, limitH - 1));
+        let final_y2 = Math.max(final_y1 + 1, Math.min(y2_orig, limitH));
 
-        // 2. 【X 轴检查】检查 X 坐标是否完全 OOB (Out-of-Bounds)
-        // (例如 x1=1560 > realWidth=1080)
-        if (x1_orig >= realWidth || x2_orig <= 0) {
-            // X 坐标已失效, 强制全宽搜索
-            logToScreen(`[calculatePaddedRegion] 检测到 X 轴OOB (x=${x1_orig}), 强制全宽搜索。`);
-            final_x1 = 0;
-            final_x2 = realWidth;
-        } else {
-            // X 坐标未失效，使用标准钳制逻辑
-            final_x1 = Math.max(0, Math.min(x1_orig, realWidth - 1));
-            final_x2 = Math.max(0, Math.min(x2_orig, realWidth));
-            // 确保 x1 < x2
-            if (final_x1 >= final_x2) {
-                final_x1 = (final_x2 > 0) ? final_x2 - 1 : 0;
-            }
-        }
-
-        // 3. 【Y 轴检查】(新!) 检查 Y 坐标是否完全 OOB
-        // (例如 y1=1800 > realHeight=1080)
-        if (y1_orig >= realHeight || y2_orig <= 0) {
-            // Y 坐标已失效, 强制全高搜索
-            logToScreen(`[calculatePaddedRegion] 检测到 Y 轴OOB (y=${y1_orig}), 强制全高搜索。`);
-            final_y1 = 0;
-            final_y2 = realHeight;
-        } else {
-            // Y 坐标未失效，使用标准钳制逻辑
-            final_y1 = Math.max(0, Math.min(y1_orig, realHeight - 1));
-            final_y2 = Math.max(0, Math.min(y2_orig, realHeight));
-            // 确保 y1 < y2
-            if (final_y1 >= final_y2) {
-                final_y1 = (final_y2 > 0) ? final_y2 - 1 : 0;
-            }
-        }
-
-        // 4. 计算最终宽高
         let w = final_x2 - final_x1;
         let h = final_y2 - final_y1;
 
-        return [final_x1, final_y1, Math.max(0, w), Math.max(0, h)];
+        // --- 🔴 调试日志 B：输出修正结果 ---
+        if (x1_orig > limitW - 100 || final_x1 + w > limitW) {
+             logToScreen(`[✅调试-计算后] 修正: x=${final_x1}, w=${w}, end=${final_x1+w} | 安全? ${(final_x1+w <= limitW)}`);
+        }
+
+        return [final_x1, final_y1, w, h];
 
     } catch (e) {
-        logErrorToScreen("[calculatePaddedRegion] Error: " + e);
-        return [0, 0, 10, 10]; // Failsafe
+        logErrorToScreen("[RegionCalc Error] " + e);
+        return [0, 0, 10, 10]; 
     }
 }
 // =================================================================================
