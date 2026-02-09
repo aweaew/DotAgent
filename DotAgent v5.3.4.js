@@ -223,7 +223,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.5 启动切换app优化",
+    VERSION: "5.3.4 监控图片坐标越界",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -1548,56 +1548,15 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 break;
             }
             case 'launch_app': {
-                logToScreen(`[${sourceName}] 任务 ${i + 1}: 智能启动应用...`);
-                
-                let targetAppName = task.appName;
-                let targetPackage = task.packageName;
-
-                // 1. 获取目标包名 (如果只给了名字，就自动查包名)
-                if (!targetPackage && targetAppName) {
-                    targetPackage = app.getPackageName(targetAppName);
-                }
-
-                if (!targetPackage) {
-                    logErrorToScreen(`无法获取应用包名: ${targetAppName || '未指定'}`);
-                    break;
-                }
-
-                // 2. 获取当前前台应用的包名
-                let currPkg = currentPackage();
-
-                // 3. 判断逻辑
-                if (currPkg === targetPackage) {
-                    // A. 如果已经是目标应用 -> 不操作 (丝滑跳过)
-                    logToScreen(`✅ 当前已在 [${targetAppName || targetPackage}]，无需操作。`);
-                    
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
+                if (task.appName) {
+                    app.launchApp(task.appName);
+                    logToScreen(`已尝试启动应用: ${task.appName}`);
                 } else {
-                    // B. 如果不是 -> “关闭”当前(回桌面) -> 启动新应用
-                    logToScreen(`🔄 切换应用: ${targetAppName || targetPackage}`);
-                    
-                    // 模拟“关闭”当前应用的效果（回桌面清理前台上下文）
-                    home(); 
-                    sleep(800);
-
-                    // 启动目标应用
-                    if (targetAppName) {
-                        app.launchApp(targetAppName);
-                    } else {
-                        app.launchPackage(targetPackage);
-                    }
-                    
-                    // 等待应用启动完成 (默认5秒)
-                    let waitTime = task.wait || 5000; 
-                    sleep(waitTime);
-                    
-                    // 双重检查：确保真的启动成功了
-                    if (currentPackage() !== targetPackage) {
-                        logErrorToScreen("⚠️ 启动可能未成功，尝试二次激活...");
-                        if (targetAppName) app.launchApp(targetAppName);
-                        else app.launchPackage(targetPackage);
-                        sleep(3000);
-                    }
+                    logErrorToScreen(`错误: launch_app 任务未指定 appName`);
                 }
+                sleep(appSettings.clickDelayMs);
+                if (threads.currentThread().isInterrupted()) break;
                 break;
             }
             case 'start_monitor': {
