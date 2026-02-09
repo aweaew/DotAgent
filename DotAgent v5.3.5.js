@@ -16,9 +16,9 @@ function saveCurrentProfileThrottled(delayMs) {
     const d = (typeof delayMs === 'number' ? delayMs : 800);
     __saveDirty = true;
     if (__saveProfileTimer) clearTimeout(__saveProfileTimer);
-    __saveProfileTimer = setTimeout(function(){
+    __saveProfileTimer = setTimeout(function () {
         if (__saveDirty && typeof saveCurrentProfile === 'function') {
-            try { saveCurrentProfile(); } catch(e) { logErrorToScreen("saveCurrentProfile() 调用失败: " + e); }
+            try { saveCurrentProfile(); } catch (e) { logErrorToScreen("saveCurrentProfile() 调用失败: " + e); }
         }
         __saveDirty = false;
         __saveProfileTimer = null;
@@ -40,7 +40,7 @@ files.ensureDir(__PQ_CACHE_DIR);
 function getPQFilePath(sequence) {
     var curProfile = (typeof currentProfileName !== 'undefined' && currentProfileName) ? currentProfileName : "default";
     var seqName = (sequence && sequence.name) ? sequence.name : "unknown";
-    
+
     // 简单的字符串哈希
     var uniqueKey = curProfile + "_" + seqName;
     var hash = 0;
@@ -56,7 +56,7 @@ function getPQFilePath(sequence) {
 function writePriorityQueueQuick(sequence) {
     try {
         if (!sequence || !sequence.name) return;
-        
+
         var targetPath = getPQFilePath(sequence);
         var curProfile = (typeof currentProfileName !== 'undefined' && currentProfileName) ? currentProfileName : "default";
 
@@ -66,17 +66,17 @@ function writePriorityQueueQuick(sequence) {
             ts: Date.now(),
             priorityQueue: Array.isArray(sequence.priorityQueue) ? sequence.priorityQueue : []
         };
-        
+
         // 【关键修复】确保文件所在的目录存在！
         // 传入具体的文件路径，它会自动创建 "/sdcard/Download/DotAgent_Cache/" 文件夹
-        files.ensureDir(targetPath); 
-        
+        files.ensureDir(targetPath);
+
         // 写入文件
         files.write(targetPath, JSON.stringify(obj));
-        
+
         // 调试日志 (确认写入成功)
         // console.log("💾 已保存: " + files.getName(targetPath));
-        
+
     } catch (e) {
         if (typeof logErrorToScreen === 'function') {
             logErrorToScreen("⚠️ 队列保存失败: " + e.message);
@@ -85,55 +85,55 @@ function writePriorityQueueQuick(sequence) {
 }
 
 // 2. 读取函数
-var __PQ_lastLoadMtimeMap = {}; 
+var __PQ_lastLoadMtimeMap = {};
 
 function tryLoadPriorityQueueQuickIfNewer(sequence) {
     try {
         var targetPath = getPQFilePath(sequence);
-        
+
         if (!files.exists(targetPath)) return null;
-        
+
         // 检查文件修改时间
         // 注意：files.stat 在某些手机上可能耗时，如果卡顿可移除此判断
         var stat = files.stat(targetPath);
         var mtime = stat.mtime || +stat.lastModifiedDate || Date.now();
-        
+
         var lastMtime = __PQ_lastLoadMtimeMap[targetPath] || 0;
         if (mtime <= lastMtime) {
-            return null; 
+            return null;
         }
-        
+
         var txt = files.read(targetPath);
-        if (!txt || txt.trim().length === 0) return null; 
-        
+        if (!txt || txt.trim().length === 0) return null;
+
         var obj = null;
         try {
             obj = JSON.parse(txt);
-        } catch(jsonErr) {
-            return null; 
+        } catch (jsonErr) {
+            return null;
         }
-        
+
         if (!obj || !obj.priorityQueue) return null;
 
         var curProfile = (typeof currentProfileName !== 'undefined' && currentProfileName) ? currentProfileName : "default";
-        
-        if (obj.profileName !== curProfile) return null; 
+
+        if (obj.profileName !== curProfile) return null;
         if (obj.sequenceName !== sequence.name) return null;
 
         __PQ_lastLoadMtimeMap[targetPath] = mtime;
-        
+
         return obj;
     } catch (e) {
         return null;
     }
 }
 
-function cleanupPriorityQueue(sequence){
-    try{
-        if(!sequence.triggers) return;
-        const ids = new Set(((sequence.triggers)||[]).map(getTriggerId));
+function cleanupPriorityQueue(sequence) {
+    try {
+        if (!sequence.triggers) return;
+        const ids = new Set(((sequence.triggers) || []).map(getTriggerId));
         sequence.priorityQueue = (sequence.priorityQueue && Array.isArray(sequence.priorityQueue)) ? sequence.priorityQueue.filter(id => ids.has(id)) : [];
-    }catch(e){}
+    } catch (e) { }
 }
 
 // 1) getTriggerId 
@@ -169,12 +169,12 @@ function bumpTriggerPriority(sequence, trigger) {
         pq.unshift(id);
 
         sequence.__priorityVersion = (sequence.__priorityVersion || 0) + 1;
-        
+
         saveCurrentProfileThrottled();
-        
+
         // 写入 PQ 缓存
         writePriorityQueueQuick(sequence);
-        
+
     } catch (e) {
         // 静默失败
     }
@@ -205,7 +205,7 @@ function reorderByPriority(sequence, triggers) {
                 // 2. PQ 排序
                 if (a.pos !== b.pos) return a.pos - b.pos;
                 // 3. 默认排序
-                return a.idx - b.idx; 
+                return a.idx - b.idx;
             })
             .map(x => x.t);
     } catch (e) {
@@ -223,7 +223,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.4 监控图片坐标越界",
+    VERSION: "5.3.5 搜索区域安全化",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -290,7 +290,8 @@ const DEFAULT_SETTINGS = {
     taskVisualsHidden: false, // <-- 1. 在这里添加新行 (别忘了逗号)
     defaultCachePadding: 50,   // <-- 在它下面添加这一行
     // 【新增】默认关闭灰度化
-    useGrayscale: false
+    useGrayscale: false,
+    defaultSafeArea: [0, 80, 1080, 2200]
 };
 
 
@@ -452,7 +453,7 @@ ui.layout(
                             <button id="clearErrorLogBtn" text="清空错误日志" marginTop="10" style="Widget.AppCompat.Button.Borderless" textColor="#FFFFFF" w="*" h="50dp" />
                         </vertical>
                         <FrameLayout id="sequenceEditorView" visibility="gone">
-                            </FrameLayout>
+                        </FrameLayout>
                     </FrameLayout>
                 </vertical>
             </card>
@@ -560,7 +561,7 @@ ui.yOffsetHelp.click(() => {
 ui.newImageBtn.click(() => {
 
     // 1. Click 发生在 UI 线程, 立即启动一个新线程来处理耗时操作
-    threads.start(function() {
+    threads.start(function () {
         try {
             // 2. 在新线程中检查悬浮窗权限
             if (!floaty.hasPermission()) {
@@ -591,10 +592,10 @@ ui.exitAppBtn.click(closeAllAndExit);
 // --- 5.1.2 (v3 修复) 在这里添加 Back 键 和 Activity 监听器 ---
 
 // 1. 添加 Back 键监听 (调用正确的退出函数)
-ui.emitter.on("back_pressed", e => { 
-    e.consumed = true; 
+ui.emitter.on("back_pressed", e => {
+    e.consumed = true;
     logErrorToScreen("检测到返回键，正在退出脚本...");
-    closeAllAndExit(); 
+    closeAllAndExit();
 });
 
 // 2. 【核心】全局 Activity 结果监听器
@@ -606,7 +607,7 @@ events.on("activity_result", (requestCode, resultCode, data) => {
             appState.ui.imageResultCallback = null;
             appState.ui.pendingCropUri = null;
         }
-        return; 
+        return;
     }
 
     const flags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION;
@@ -635,15 +636,15 @@ events.on("activity_result", (requestCode, resultCode, data) => {
             let intent = new android.content.Intent("com.android.camera.action.CROP");
             intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
             intent.setDataAndType(uri, "image/*");
-            intent.putExtra("crop", "true"); 
-            intent.putExtra("scale", true); 
-            intent.putExtra("return-data", false); 
+            intent.putExtra("crop", "true");
+            intent.putExtra("scale", true);
+            intent.putExtra("return-data", false);
             intent.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, outputUri);
             intent.putExtra("outputFormat", android.graphics.Bitmap.CompressFormat.JPEG.toString());
 
             activity.startActivityForResult(intent, CONSTANTS.REQUEST_CODES.NEW_IMAGE_CROP);
 
-        } catch(e) {
+        } catch (e) {
             logErrorToScreen("启动裁剪器失败: " + e);
             toast("启动裁剪器失败");
             appState.ui.pendingCropUri = null; // 重置
@@ -662,7 +663,7 @@ events.on("activity_result", (requestCode, resultCode, data) => {
         }
 
         // (使用线程，防止保存操作卡住UI)
-        threads.start(function() {
+        threads.start(function () {
             try {
                 // 1. 读取裁剪后的临时JPG
                 let img = images.read(tempCroppedFile.getAbsolutePath());
@@ -680,7 +681,7 @@ events.on("activity_result", (requestCode, resultCode, data) => {
 
                 // 3. 【V7 核心】: 裁剪成功后, 在主窗口用 "弹窗" 提示用户
                 ui.run(() => {
-                    dialogs.alert("新建图片成功", 
+                    dialogs.alert("新建图片成功",
                         "图片已成功保存到 'images' 文件夹中：\n\n" + newName +
                         "\n\n您现在可以在“编辑任务”或“编辑触发器”中选择它。"
                     );
@@ -772,10 +773,10 @@ ui.startFloatyBtn.click(function () {
             ui.startFloatyBtn.setText("启动");
             logToScreen(`✅ 悬浮窗启动成功！当前方案: ${currentProfileName.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', '')}`);
             toast("悬浮窗口已启动！");
-            
+
             // --- 核心修复 (Bug 4)：删除这一行，不再隐藏主窗口 ---
             // activity.moveTaskToBack(true);
-            
+
             if (!metaConfig.hasSeenTutorial) {
                 startTutorial();
             }
@@ -1195,7 +1196,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 // 使用 var 避免重复声明
                 var taskNameLog = task.name ? taskName : `${taskName} ("${task.textToFind}")`;
                 logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskNameLog}`);
-                
+
                 var foundResult = null;
                 var timeout = task.timeout || 5000;
 
@@ -1222,7 +1223,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     var startTime = new Date().getTime();
                     while (new Date().getTime() - startTime < timeout) {
                         if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
-                        
+
                         var captured = captureAndProcessScreen(); // <--- 替换这里
                         if (!captured) { sleep(1000); continue; }
 
@@ -1234,12 +1235,13 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                         }
                         var ocrResults = ocr.paddle.detect(captured, ocrOptions);
                         captured.recycle();
-                        
+
                         var target = ocrResults.find(r => r.label.includes(task.textToFind));
                         if (target) {
                             foundResult = target;
-                            task.cachedBounds = { left: target.bounds.left, top: target.bounds.top, right: target.bounds.right, bottom: target.bounds.bottom };
-                            saveCurrentProfileThrottled();
+                            let b = target.bounds;
+                            // 使用新函数更新
+                            updateCachedBoundsSafe(task, { left: b.left, top: b.top, right: b.right, bottom: b.bottom });
                             break;
                         }
                         sleep(300);
@@ -1250,8 +1252,9 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
 
                 // --- 3. 结果处理 ---
                 if (foundResult) {
+
                     var successAction = task.onSuccess || { action: 'click', after: 'none' };
-                    var taskActionType = successAction.action; 
+                    var taskActionType = successAction.action;
 
                     // handleOcrSuccess 处理主动作
                     handleOcrSuccess(foundResult, successAction);
@@ -1260,7 +1263,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     if (successAction.after === 'terminate') {
                         logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 终止序列。`);
                         ui.run(() => stopExecution(`任务 [${taskNameLog}] 触发终止`));
-                        break; 
+                        break;
                     } else if (successAction.after === 'sequence') {
                         if (successAction.sequenceName) {
                             logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 调用子序列。`);
@@ -1284,7 +1287,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 // 使用 var
                 var taskNameLog = task.name ? taskName : `${taskName} ("${task.imageFile}")`;
                 logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskNameLog}`);
-                
+
                 var foundImagePoint = null;
                 var imageTimeout = task.timeout || 5000;
                 var imagePath = files.join(CONSTANTS.FILES.IMAGE_DIR, task.imageFile);
@@ -1306,7 +1309,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                         let grayTemp = images.grayscale(template);
                         template.recycle();
                         template = grayTemp;
-                    } catch(e) {}
+                    } catch (e) { }
                 }
                 // =========== 🔴【添加这段代码】结束 ===========
                 // --- 1. 缓存搜索 ---
@@ -1331,7 +1334,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     var startTime = new Date().getTime();
                     while (new Date().getTime() - startTime < imageTimeout) {
                         if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
-                        
+
                         var captured = captureAndProcessScreen();
                         if (!captured) { sleep(1000); continue; }
 
@@ -1346,8 +1349,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
 
                         if (p) {
                             foundImagePoint = p;
-                            task.cachedBounds = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
-                            saveCurrentProfileThrottled();
+                            updateCachedBoundsSafe(task, { x: foundImagePoint.x, y: foundImagePoint.y, width: template.getWidth(), height: template.getHeight() });
                             break;
                         }
                         sleep(300);
@@ -1362,9 +1364,9 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 // --- 3. 结果处理 ---
                 if (foundImagePoint) {
                     var location = {
-                        left: foundImagePoint.x, 
-                        top: foundImagePoint.y, 
-                        right: foundImagePoint.x + template.getWidth(), 
+                        left: foundImagePoint.x,
+                        top: foundImagePoint.y,
+                        right: foundImagePoint.x + template.getWidth(),
                         bottom: foundImagePoint.y + template.getHeight(),
                         centerX: function () { return this.left + (this.right - this.left) / 2; },
                         centerY: function () { return this.top + (this.bottom - this.top) / 2; }
@@ -1380,7 +1382,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     if (successAction.after === 'terminate') {
                         logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 终止序列。`);
                         ui.run(() => stopExecution(`任务 [${taskNameLog}] 触发终止`));
-                        break; 
+                        break;
                     } else if (successAction.after === 'sequence') {
                         if (successAction.sequenceName) {
                             logToScreen(`任务 [${taskNameLog}] 成功，后续操作: 调用子序列。`);
@@ -1398,7 +1400,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     logToScreen(`超时 ${imageTimeout}ms 未找到图片 "${task.imageFile}"`);
                     handleGeneralFailAction(task.onFail, '找图失败', sourceName, contextType, depth);
                 }
-                
+
                 template.recycle();
                 break;
             }
@@ -1432,7 +1434,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                             let grayTemp = images.grayscale(imageTemplate);
                             imageTemplate.recycle();
                             imageTemplate = grayTemp;
-                        } catch(e) {}
+                        } catch (e) { }
                     }
                     // =========== 🔴【添加这段代码】结束 ===========
                     findOptions = { threshold: task.threshold || 0.8 };
@@ -1571,17 +1573,17 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
 
                 logToScreen(`[${sourceName}] 动态启动监控: ${task.sequenceName}`);
                 const sequenceToMonitor = sequences[task.sequenceName];
-                
+
                 if (sequenceToMonitor && sequenceToMonitor.executionPolicy.mode === 'monitor') {
                     // (这个内部检查是多余的，因为上面的全局检查已经覆盖了，但保留它也无害)
                     if (appState.activeMonitors[task.sequenceName]) {
                         logToScreen(`警告: 监控 [${task.sequenceName}] 已在运行中，无需重复启动。`);
                         break;
                     }
-                    
+
                     // 启动监控线程
                     runSingleMonitorThread(sequenceToMonitor, task.sequenceName);
-                    
+
                     // --- 修复 1: (UI同步) 启动后，手动更新 👁️ 按钮状态 ---
                     updateMonitorStatusUI();
                     // --- 修复 1 结束 ---
@@ -1593,21 +1595,21 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
             }
             case 'stop_monitor': {
                 logToScreen(`[${sourceName}] 正在停止监控: ${task.sequenceName}`);
-                
+
                 const monitorThreadId = appState.activeMonitors[task.sequenceName];
-                
+
                 if (monitorThreadId) {
                     // 【核心修复 1】先清理数据，再停止线程。防止线程提前终止导致状态残留。
-                    
+
                     // 1. 从活动列表中移除
                     delete appState.activeMonitors[task.sequenceName];
-                    
+
                     // 2. 检查并更新全局开关状态
                     // 如果停止的是主监控，或者当前没有任何监控在运行了，必须把总开关 isMonitoring 关掉
                     // 这样 updateMonitorStatusUI 才能正确识别状态
                     if (task.sequenceName === appSettings.mainMonitorKey || Object.keys(appState.activeMonitors).length === 0) {
                         appState.isMonitoring = false;
-                        appState.timers = {}; 
+                        appState.timers = {};
                         logToScreen("所有监控已停止，重置全局状态。");
                     }
 
@@ -1622,7 +1624,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                             }
                         }
                     });
-                    
+
                     // 4. 最后再处理线程停止
                     if (appState.threads[monitorThreadId]) {
                         // 如果是停止自己(当前线程)，interrupt后脚本可能随时停止，所以这步放最后
@@ -1632,9 +1634,9 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                         }
                         delete appState.threads[monitorThreadId];
                     }
-                    
+
                     logToScreen(`已停止监控 [${task.sequenceName}]`);
-                    
+
                 } else {
                     logToScreen(`警告: 监控 [${task.sequenceName}] 未在运行，无法停止。`);
                 }
@@ -1781,7 +1783,7 @@ function executeTriggerAction(trigger, location) {
                 const endY = startY + (action.swipeVector.dy || 0);
                 const duration = action.swipeVector.duration || appSettings.swipe.duration;
                 logToScreen(`...从目标中心 (${startX.toFixed(0)}, ${startY.toFixed(0)}) 开始执行向量滑动`);
-                
+
                 if (appSettings.useGestureSwipe) {
                     smoothSwipe(startX, startY, endX, endY);
                 } else {
@@ -1867,20 +1869,20 @@ function executeMonitorFailAction(trigger) {
     }
 }
 function makeId(t) {
-  return ((t && t.type) ? t.type : "image") + "::" + ((t && t.target) ? t.target : "");
+    return ((t && t.type) ? t.type : "image") + "::" + ((t && t.target) ? t.target : "");
 }
 
 function deepClone(o) {
-  try { return JSON.parse(JSON.stringify(o)); } catch (_) { return Object.assign({}, o); }
+    try { return JSON.parse(JSON.stringify(o)); } catch (_) { return Object.assign({}, o); }
 }
 
 function rotateArray(arr, start) {
-  if (!arr || arr.length === 0) return arr;
-  var s = Math.max(0, Math.min(start || 0, arr.length - 1));
-  if (s === 0) return arr.slice();
-  var head = arr.slice(s);
-  var tail = arr.slice(0, s);
-  return head.concat(tail);
+    if (!arr || arr.length === 0) return arr;
+    var s = Math.max(0, Math.min(start || 0, arr.length - 1));
+    if (s === 0) return arr.slice();
+    var head = arr.slice(s);
+    var tail = arr.slice(0, s);
+    return head.concat(tail);
 }
 
 
@@ -1908,7 +1910,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
 
         // --- 2. 主循环 ---
         while (!threads.currentThread().isInterrupted()) {
-            
+
             // (PQ 维护逻辑保持不变)
             try {
                 try { cleanupPriorityQueue(sequence); } catch (e) { }
@@ -1929,17 +1931,17 @@ function runSingleMonitorThread(sequence, sequenceKey) {
             } catch (e) { }
 
             const localTriggers = Array.isArray(sequence.triggers) ? sequence.triggers.slice() : [];
-            let capturedImage = null; 
+            let capturedImage = null;
             let triggerFiredInCycle = false;
 
             try {
                 // --- 截图 ---
                 for (let retry = 0; retry < 3; retry++) {
-                    capturedImage = captureAndProcessScreen(); 
+                    capturedImage = captureAndProcessScreen();
                     if (capturedImage) break;
                     sleep(300);
                 }
-                
+
                 if (!capturedImage) {
                     logErrorToScreen(`[${sequence.name}] 连续截图失败`);
                     if (!sequence._failCount) sequence._failCount = 0;
@@ -2006,8 +2008,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                             }
                                             p = images.findImage(capturedImage, template, findOptions);
                                             if (p) {
-                                                trigger.cachedBounds = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
-                                                saveCurrentProfileThrottled();
+                                                updateCachedBoundsSafe(trigger, { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() });
                                             }
                                         }
                                         if (p) foundLocation = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
@@ -2016,15 +2017,15 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                             } finally {
                                 if (template) template.recycle();
                             }
-                        } 
+                        }
                         else if (trigger.type === 'ocr') {
                             let ocrTarget = null;
-                            
+
                             // 🟢 策略A：缓存搜索 (手动裁剪版 - 彻底修复越界bug)
                             if (trigger.cachedBounds) {
                                 let b = trigger.cachedBounds;
                                 let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
-                                
+
                                 // 1. 计算裁剪区域
                                 let r = calculatePaddedRegion(b, padding, imgW, imgH);
                                 // r = [x, y, w, h]
@@ -2033,13 +2034,13 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                 let subImg = null;
                                 try {
                                     subImg = images.clip(capturedImage, r[0], r[1], r[2], r[3]);
-                                    
+
                                     // 3. 识别小图片 (不传 region 参数)
                                     let ocrResults = ocr.paddle.detect(subImg, { useSlim: true });
-                                    
+
                                     // 4. 坐标回补 (将小图坐标转换为大图坐标)
                                     ocrTarget = ocrResults.find(res => res.label.includes(trigger.target));
-                                    
+
                                     if (ocrTarget) {
                                         // 这里的 bounds 是相对 subImg 的，加上偏移量 r[0], r[1]
                                         ocrTarget.bounds.left += r[0];
@@ -2047,7 +2048,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                         ocrTarget.bounds.right += r[0];
                                         ocrTarget.bounds.bottom += r[1];
                                     }
-                                } catch(e) {
+                                } catch (e) {
                                     // 裁剪或识别异常忽略
                                 } finally {
                                     if (subImg) subImg.recycle(); // 必须回收小图
@@ -2074,7 +2075,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                             ocrTarget.bounds.right += searchRegion[0];
                                             ocrTarget.bounds.bottom += searchRegion[1];
                                         }
-                                    } catch(e) {} finally { if (subImg) subImg.recycle(); }
+                                    } catch (e) { } finally { if (subImg) subImg.recycle(); }
                                 } else {
                                     // 全屏识别 (直接跑)
                                     let ocrResults = ocr.paddle.detect(capturedImage, { useSlim: true });
@@ -2084,8 +2085,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                 if (ocrTarget) {
                                     // 更新缓存
                                     let b = ocrTarget.bounds;
-                                    trigger.cachedBounds = { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
-                                    saveCurrentProfileThrottled();
+                                    updateCachedBoundsSafe(trigger, { left: b.left, top: b.top, right: b.right, bottom: b.bottom });
                                 }
                             }
 
@@ -2093,7 +2093,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                 let b = ocrTarget.bounds;
                                 foundLocation = { x: b.left, y: b.top, width: b.width(), height: b.height() };
                             }
-                        } 
+                        }
                         else if (trigger.type === 'timer_end') {
                             const timerName = trigger.target;
                             if (appState.timers[timerName] && realNowTime > appState.timers[timerName]) {
@@ -2121,7 +2121,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 } finally {
                     if (capturedImage && !capturedImage.isRecycled()) {
                         capturedImage.recycle();
-                        capturedImage = null; 
+                        capturedImage = null;
                     }
                 }
                 // ================== 🔰 内存安全层 END ==================
@@ -2131,7 +2131,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 }
 
                 if (new Date().getTime() % 30000 < interval) {
-                    try { java.lang.System.gc(); } catch (e) {}
+                    try { java.lang.System.gc(); } catch (e) { }
                 }
 
             } catch (e) {
@@ -2175,7 +2175,7 @@ function toggleMonitoring() {
     }
 
     // 标记“主监控”已启动
-    appState.isMonitoring = true; 
+    appState.isMonitoring = true;
     appState.timers = {}; // Reset timers on global monitor start
 
     runSingleMonitorThread(mainMonitor, mainMonitorKey);
@@ -2267,9 +2267,9 @@ function createControlPanel() {
     uiRefs.controlPanel = floaty.rawWindow(
         <card id="mainLayout" bg="{{CONSTANTS.UI.THEME.PRIMARY_CARD}}" cardCornerRadius="12dp" cardElevation="8dp">
             <vertical>
-                
+
                 <vertical id="headerContainer" padding="4">
-                    
+
                     {/* --- 第 1 行: 方案名称 --- */}
                     <horizontal gravity="center_vertical" w="*">
                         <horizontal layout_weight="1" gravity="left|center_vertical" marginLeft="4">
@@ -2278,17 +2278,17 @@ function createControlPanel() {
                         </horizontal>
                         <text id="positionText" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" singleLine="true" />
                     </horizontal>
-                    
+
                     {/* --- 第 2 行: 状态 (轮播) 和 时间 --- */}
                     <horizontal gravity="center_vertical" w="*" marginTop="2">
-                        
+
                         {/* 状态文本：单行，末尾省略，占据剩余空间 */}
-                        <text id="statusText" text="准备就绪" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" 
-                              singleLine="true" ellipsize="end"
-                              layout_weight="1" w="0dp" marginLeft="4" />
+                        <text id="statusText" text="准备就绪" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}"
+                            singleLine="true" ellipsize="end"
+                            layout_weight="1" w="0dp" marginLeft="4" />
 
                         {/* 时间 */}
-                        <text id="systemTimeText" text="--:--:--" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" singleLine="true" marginRight="4" marginLeft="4"/>
+                        <text id="systemTimeText" text="--:--:--" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" singleLine="true" marginRight="4" marginLeft="4" />
                     </horizontal>
 
                 </vertical>
@@ -2316,10 +2316,10 @@ function createControlPanel() {
 
     ui.post(() => {
         if (!uiRefs.controlPanel) return;
-        
+
         // 拖动句柄安全绑定
         let safeHandle = uiRefs.controlPanel.headerContainer;
-        if (!safeHandle) safeHandle = uiRefs.controlPanel.mainLayout; 
+        if (!safeHandle) safeHandle = uiRefs.controlPanel.mainLayout;
 
         if (safeHandle) {
             setupDraggable(
@@ -2335,14 +2335,14 @@ function createControlPanel() {
         if (uiRefs.controlPanel.executeBtn) uiRefs.controlPanel.executeBtn.click(toggleSequenceExecution);
         if (uiRefs.controlPanel.monitorBtn) uiRefs.controlPanel.monitorBtn.click(toggleMonitoring);
         if (uiRefs.controlPanel.addTaskBtn) uiRefs.controlPanel.addTaskBtn.click(showProfileManager);
-        
+
         if (uiRefs.controlPanel.manageBtn) {
             let manageClickCount = 0;
             let manageClickTimer = null;
-            const doubleClickDelay = 300; 
-            
+            const doubleClickDelay = 300;
+
             uiRefs.controlPanel.manageBtn.click(() => {
-                manageClickCount++; 
+                manageClickCount++;
                 if (manageClickTimer) { clearTimeout(manageClickTimer); }
                 manageClickTimer = setTimeout(() => {
                     if (manageClickCount === 1) {
@@ -2356,7 +2356,7 @@ function createControlPanel() {
                                     renderSequenceListEditor();
                                 }
                             });
-                        }, 500); 
+                        }, 500);
                     } else if (manageClickCount >= 2) {
                         activity.moveTaskToBack(true);
                         toast("主窗口已隐藏");
@@ -2369,24 +2369,24 @@ function createControlPanel() {
     });
 
     // --- 核心逻辑：状态轮播定时器 ---
-    
+
     if (appState.ui.systemTimeTimer) {
         clearInterval(appState.ui.systemTimeTimer);
     }
-    
+
     let tickCount = 0;
 
     appState.ui.systemTimeTimer = setInterval(() => {
         if (uiRefs.controlPanel && uiRefs.controlPanel.systemTimeText && uiRefs.controlPanel.statusText) {
-            
+
             tickCount++;
-            
+
             // 1. 时钟
             let now = new Date();
             let h = now.getHours();
             let m = String(now.getMinutes()).padStart(2, '0');
             let s = String(now.getSeconds()).padStart(2, '0');
-            
+
             // 2. 状态文本逻辑
             let statusStr = "";
 
@@ -2394,12 +2394,12 @@ function createControlPanel() {
             if (appState.currentWaitTask && appState.currentWaitTask.remaining > 0) {
                 let remainingSeconds = Math.round(appState.currentWaitTask.remaining / 1000);
                 statusStr = `⏳ 等待: ${remainingSeconds}s`;
-            } 
+            }
             // 优先级 2: 序列运行中 (忙碌)
             else if (appState.isExecuting && appSettings.mainSequenceKey) {
                 let name = (sequences[appSettings.mainSequenceKey] || {}).name || appSettings.mainSequenceKey || '序列运行中';
                 statusStr = `▶️ ${name}`;
-            } 
+            }
             // 优先级 3: 监控运行中 (忙碌 - 只有监控在跑)
             else if (appState.isMonitoring || Object.keys(appState.activeMonitors).length > 0) {
                 let key = appSettings.mainMonitorKey;
@@ -2408,12 +2408,12 @@ function createControlPanel() {
                 statusStr = `👁️ ${name}`;
             }
             // 优先级 4: 空闲 (轮播显示)
-            else { 
+            else {
                 const mainSeqKey = appSettings.mainSequenceKey;
                 const mainMonKey = appSettings.mainMonitorKey;
                 let seqName = (mainSeqKey && sequences[mainSeqKey]) ? (sequences[mainSeqKey].name || mainSeqKey) : '无';
                 let monName = (mainMonKey && sequences[mainMonKey]) ? (sequences[mainMonKey].name || mainMonKey) : '无';
-                
+
                 // 轮播逻辑：6秒一个周期
                 // 0, 1, 2秒 -> 显示主序列
                 // 3, 4, 5秒 -> 显示主监控
@@ -2427,11 +2427,11 @@ function createControlPanel() {
             // 3. 更新 UI
             ui.run(() => {
                 if (!uiRefs.controlPanel) return;
-                
+
                 if (uiRefs.controlPanel.systemTimeText) {
                     uiRefs.controlPanel.systemTimeText.setText(`${h}:${m}:${s}`);
                 }
-                
+
                 if (uiRefs.controlPanel.statusText) {
                     uiRefs.controlPanel.statusText.setText(statusStr);
                 }
@@ -2545,7 +2545,7 @@ function recreateAllTaskVisuals() {
         if (!uiRefs.redDot) {
             createRedDot();
         }
-        
+
         // 延迟同步红点位置，确保布局已完成
         setTimeout(syncRedDotPosition, 50);
 
@@ -2600,7 +2600,7 @@ function showAddTaskToMainDialog() {
         <vertical>
             {/* 总开关：控制所有浮窗的显示/隐藏 */}
             <horizontal padding="16 8" gravity="center_vertical">
-                <text text="显示任务浮窗 (🎯, S, E)" textSize="16sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" layout_weight="1"/>
+                <text text="显示任务浮窗 (🎯, S, E)" textSize="16sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" layout_weight="1" />
                 <Switch id="toggleVisuals" />
             </horizontal>
 
@@ -2623,13 +2623,13 @@ function showAddTaskToMainDialog() {
 
     // B. 设置 Switch 逻辑
     // 逻辑：Checked(开) = 显示(Hidden=false) ; Unchecked(关) = 隐藏(Hidden=true)
-    const isCurrentlyShown = appSettings.taskVisualsHidden !== true; 
+    const isCurrentlyShown = appSettings.taskVisualsHidden !== true;
     view.toggleVisuals.setChecked(isCurrentlyShown);
 
     view.toggleVisuals.setOnCheckedChangeListener((btn, isChecked) => {
         // 更新设置
-        appSettings.taskVisualsHidden = !isChecked; 
-        saveCurrentProfileThrottled(); 
+        appSettings.taskVisualsHidden = !isChecked;
+        saveCurrentProfileThrottled();
 
         // 立即刷新界面
         recreateAllTaskVisuals();
@@ -2761,7 +2761,7 @@ function addClickTask(targetSequence, onComplete) {
     if (appState.isFloatyCreated && sequences[appSettings.mainSequenceKey] === targetSequence) {
         createTaskWindow(task, targetSequence);
     }
-    
+
     if (onComplete) onComplete();
 }
 
@@ -2771,23 +2771,23 @@ function addSwipeTask(targetSequence, onComplete) {
     // --- 核心修改：移除所有弹窗，使用默认值 ---
     try {
         let newIndex = targetSequence.tasks.length;
-        let task = { 
-            type: 'swipe', 
-            name: `滑动任务 ${newIndex + 1}`, 
+        let task = {
+            type: 'swipe',
+            name: `滑动任务 ${newIndex + 1}`,
             startX: 1000, // 默认值
             startY: 1000, // 默认值
             endX: 1000,   // 默认值
             endY: 500,    // 默认值
-            duration: appSettings.swipe.duration 
+            duration: appSettings.swipe.duration
         };
 
         const addedTask = addNewTask(task, targetSequence); // addNewTask 已经包含了 toast
-        
+
         // 仅当可视化开启时，才尝试创建浮窗
         if (sequences[appSettings.mainSequenceKey] === targetSequence && !appSettings.taskVisualsHidden) {
             createSwipeVisuals(addedTask, targetSequence);
         }
-        
+
         if (onComplete) onComplete();
 
     } catch (e) {
@@ -3025,7 +3025,7 @@ function getRealWidth() {
     try {
         // 使用 Android context 获取最新的显示指标
         return context.getResources().getDisplayMetrics().widthPixels;
-    } catch(e) {
+    } catch (e) {
         logErrorToScreen("getRealWidth Gagal: " + e);
         return device.width; // 备用方案
     }
@@ -3038,7 +3038,7 @@ function getRealHeight() {
     try {
         // 使用 Android context 获取最新的显示指标
         return context.getResources().getDisplayMetrics().heightPixels;
-    } catch(e) {
+    } catch (e) {
         logErrorToScreen("getRealHeight Gagal: " + e);
         return device.height; // 备用方案
     }
@@ -3054,14 +3054,14 @@ function filterAndSortSequences(filterText) {
     const mainSeqKey = appSettings.mainSequenceKey;
     const mainMonKey = appSettings.mainMonitorKey;
     const sequenceKeys = Object.keys(sequences);
-    
+
     filterText = filterText ? filterText.toLowerCase() : "";
 
     const sortedList = sequenceKeys.map(key => {
         const sequence = sequences[key];
         const policy = sequence.executionPolicy || {};
-        let sortPriority = 3; 
-        let type = "🔗"; 
+        let sortPriority = 3;
+        let type = "🔗";
 
         if (key === mainSeqKey) { sortPriority = 0; type = "⭐"; }
         else if (key === mainMonKey) { sortPriority = 0; type = "🧿"; }
@@ -3069,36 +3069,74 @@ function filterAndSortSequences(filterText) {
 
         return { key: key, name: sequence.name || key, icon: type, priority: sortPriority };
     })
-    // --- 核心过滤逻辑 ---
-    .filter(item => {
-        if (!filterText) return true; // 如果没有过滤器，全部显示
-        return item.name.toLowerCase().includes(filterText);
-    })
-    // --- 排序逻辑 ---
-    .sort((a, b) => {
-        if (a.priority !== b.priority) {
-            return a.priority - b.priority;
-        }
-        return a.name.localeCompare(b.name);
-    });
-    
+        // --- 核心过滤逻辑 ---
+        .filter(item => {
+            if (!filterText) return true; // 如果没有过滤器，全部显示
+            return item.name.toLowerCase().includes(filterText);
+        })
+        // --- 排序逻辑 ---
+        .sort((a, b) => {
+            if (a.priority !== b.priority) {
+                return a.priority - b.priority;
+            }
+            return a.name.localeCompare(b.name);
+        });
+
     return sortedList;
 }
 
+/**
+ * 配置文件标准化/清洗函数
+ * 用于兼容旧版本配置文件，自动填充缺失的字段（如 safeArea）
+ */
+function normalizeProfileData() {
+    // 1. 确保全局设置有默认安全区
+    if (!appSettings.defaultSafeArea) {
+        // 如果 DEFAULT_SETTINGS 里也没定义，就给个硬编码保底
+        appSettings.defaultSafeArea = (DEFAULT_SETTINGS.defaultSafeArea) ? DEFAULT_SETTINGS.defaultSafeArea : [0, 80, 1080, 2200];
+    }
 
+    const defaultSafe = appSettings.defaultSafeArea;
+
+    // 2. 遍历所有序列 (Sequences)
+    if (sequences) {
+        for (let key in sequences) {
+            let seq = sequences[key];
+
+            // A. 处理序列中的任务 (Tasks)
+            if (seq.tasks && Array.isArray(seq.tasks)) {
+                seq.tasks.forEach(task => {
+                    // 仅针对 OCR 和 Image 类型的任务
+                    if ((task.type === 'ocr' || task.type === 'image') && !task.safeArea) {
+                        task.safeArea = defaultSafe;
+                    }
+                });
+            }
+
+            // B. 处理监控触发器 (Triggers)
+            if (seq.triggers && Array.isArray(seq.triggers)) {
+                seq.triggers.forEach(trigger => {
+                    if ((trigger.type === 'ocr' || trigger.type === 'image') && !trigger.safeArea) {
+                        trigger.safeArea = defaultSafe;
+                    }
+                });
+            }
+        }
+    }
+}
 /**
  * (新) 填充主UI中的序列列表
  * @param {string} [filterText=""] - 用于过滤列表的搜索词
  */
 function populateSequenceListEditor(filterText) {
     if (!ui.sequenceListContainer) return; // 防止UI未渲染时出错
-    
+
     const container = ui.sequenceListContainer;
     filterText = filterText || "";
 
     ui.run(() => {
         container.removeAllViews();
-        
+
         const sortedList = filterAndSortSequences(filterText);
 
         if (sortedList.length === 0) {
@@ -3121,7 +3159,7 @@ function populateSequenceListEditor(filterText) {
 
             itemView.seqName.setText(item.name);
             itemView.seqIcon.setText(item.icon);
-            
+
             // 定义一个回调函数，用于在弹窗关闭后刷新此列表
             const refreshListCallback = () => {
                 let currentFilter = ui.sequenceSearchBox ? ui.sequenceSearchBox.getText().toString() : "";
@@ -3142,10 +3180,10 @@ function populateSequenceListEditor(filterText) {
                 let actions = ["复制序列 (Copy)", "删除序列 (Delete)"];
                 if (isMonitor) { actions.push("设为主监控 (Set Main Monitor)"); }
                 else { actions.push("设为主序列 (Set Main Sequence)"); }
-                actions.push("取消"); 
+                actions.push("取消");
 
                 dialogs.select(`操作: "${seqName}"`, actions).then(i => {
-                    if (i < 0) return; 
+                    if (i < 0) return;
                     const action = actions[i];
 
                     if (action === "复制序列 (Copy)") {
@@ -3153,7 +3191,7 @@ function populateSequenceListEditor(filterText) {
                             if (!newName) { toast("名称不能为空"); return; }
                             const newKey = newName.replace(/\s/g, '_') + "_" + new Date().getTime();
                             if (sequences[newKey]) { toast("同名序列已存在"); return; }
-                            const newSequence = JSON.parse(JSON.stringify(sequence)); 
+                            const newSequence = JSON.parse(JSON.stringify(sequence));
                             newSequence.name = newName;
                             sequences[newKey] = newSequence;
                             saveCurrentProfileThrottled();
@@ -3187,7 +3225,7 @@ function populateSequenceListEditor(filterText) {
                         }
                     }
                 });
-                return true; 
+                return true;
             });
             container.addView(itemView);
         });
@@ -3207,20 +3245,20 @@ function renderSequenceListEditor() {
             <card w="*" margin="16 8" cardCornerRadius="16dp" cardElevation="4dp" bg="{{CONSTANTS.UI.THEME.PRIMARY_CARD}}">
                 <input id="sequenceSearchBox" hint="搜索序列..." padding="12" textSize="16sp" singleLine="true" bg="{{CONSTANTS.UI.THEME.PRIMARY_CARD}}" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" />
             </card>
-            
+
             {/* --- 序列列表 --- */}
             <card w="*" margin="16 8" cardCornerRadius="16dp" cardElevation="4dp" bg="{{CONSTANTS.UI.THEME.PRIMARY_CARD}}" layout_weight="1">
                 <ScrollView>
                     <vertical id="sequenceListContainer" padding="8" />
                 </ScrollView>
             </card>
-            
+
             {/* --- 操作按钮 --- */}
             <card w="*" margin="16 8" cardCornerRadius="16dp" cardElevation="4dp" bg="{{CONSTANTS.UI.THEME.PRIMARY_CARD}}">
-                 <button id="addSequenceBtn" text="创建新序列" style="Widget.AppCompat.Button.Borderless.Colored" textColor="{{CONSTANTS.UI.THEME.ACCENT_GRADIENT_START}}" />
+                <button id="addSequenceBtn" text="创建新序列" style="Widget.AppCompat.Button.Borderless.Colored" textColor="{{CONSTANTS.UI.THEME.ACCENT_GRADIENT_START}}" />
             </card>
         </vertical>
-    , ui.sequenceEditorView, false); // 注意：父容器是 ui.sequenceEditorView
+        , ui.sequenceEditorView, false); // 注意：父容器是 ui.sequenceEditorView
 
     // 2. 将新UI添加到选项卡
     ui.run(() => {
@@ -3238,8 +3276,8 @@ function renderSequenceListEditor() {
             onTextChanged: (text, start, before, count) => {
                 try {
                     populateSequenceListEditor(text.toString());
-                } catch(e) {
-                    logErrorToScreen("搜索序列时出错: "+e);
+                } catch (e) {
+                    logErrorToScreen("搜索序列时出错: " + e);
                 }
             }
         }));
@@ -3498,9 +3536,9 @@ function populateTaskList(container, sequence, sequenceKey, filterText) {
     const filteredTasks = tasks.filter(task => {
         if (!filterText) return true;
         return (task.name || "").toLowerCase().includes(filterText) ||
-               (task.type || "").toLowerCase().includes(filterText);
+            (task.type || "").toLowerCase().includes(filterText);
     });
-    
+
     // --- 2. 定义统一的回调函数 (用于刷新) ---
     const refreshTaskList = () => {
         let currentFilter = ui.taskSearchBox ? ui.taskSearchBox.getText().toString() : "";
@@ -3509,7 +3547,7 @@ function populateTaskList(container, sequence, sequenceKey, filterText) {
 
     ui.run(() => {
         container.removeAllViews();
-        
+
         if (filteredTasks.length === 0) {
             container.addView(ui.inflate(<text text="没有匹配的任务" textColor="#9E9E9E" gravity="center" padding="20" />, container, false));
             return;
@@ -3524,13 +3562,13 @@ function populateTaskList(container, sequence, sequenceKey, filterText) {
             const itemView = ui.inflate(
                 <card w="*" margin="2 2" cardCornerRadius="8dp" cardElevation="2dp" bg="{{CONSTANTS.UI.THEME.SECONDARY_CARD}}">
                     <horizontal w="*" gravity="center_vertical" padding="10 1" bg="?attr/selectableItemBackground">
-                        
+
                         {/* 1. 任务信息 (名称 + 勾选框) */}
                         <horizontal layout_weight="1" gravity="center_vertical">
                             <text id="taskName" layout_weight="1" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" ellipsize="end" maxLines="1" />
                             <checkbox id="enabledCheckbox" w="auto" />
                         </horizontal>
-                        
+
                         {/* 2. 排序按钮 (移入Card) */}
                         <vertical gravity="center_vertical">
                             <button id="moveUpBtn" text="↑" w="30dp" h="40dp" marginBottom="-10dp" style="Widget.AppCompat.Button.Borderless.Colored" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" />
@@ -3538,7 +3576,7 @@ function populateTaskList(container, sequence, sequenceKey, filterText) {
                         </vertical>
                     </horizontal>
                 </card>
-            , container, false);
+                , container, false);
             // --- 修改结束 ---
 
             // --- 核心修复：在 JS 中设置 enabled 状态 ---
@@ -3575,8 +3613,8 @@ function populateTaskList(container, sequence, sequenceKey, filterText) {
                         if (i === 0) { // 复制
                             const newTask = JSON.parse(JSON.stringify(task));
                             newTask.name = (task.name || '副本') + " (复制)";
-                            newTask.enabled = true; 
-                            delete newTask.cachedBounds; 
+                            newTask.enabled = true;
+                            delete newTask.cachedBounds;
                             tasks.splice(index + 1, 0, newTask);
                             refreshTaskList();
                             toast("任务已复制");
@@ -3590,9 +3628,9 @@ function populateTaskList(container, sequence, sequenceKey, filterText) {
                             });
                         }
                     });
-                return true; 
+                return true;
             });
-            
+
             itemView.moveUpBtn.click(() => {
                 if (index > 0) {
                     const taskToMove = tasks.splice(index, 1)[0];
@@ -3629,26 +3667,26 @@ function renderTaskListEditor(sequenceKey) {
     // 1. 定义新UI的XML布局 (包含“返回”按钮)
     const view = ui.inflate(
         <vertical bg="{{CONSTANTS.UI.THEME.BACKGROUND}}" w="*" h="*">
-            
+
             {/* --- 1. 头部 & 导航 (已修改) --- */}
             <card w="*" margin="2 1" cardCornerRadius="16dp" cardElevation="4dp" bg="{{CONSTANTS.UI.THEME.PRIMARY_CARD}}">
                 {/* --- 核心修改：添加 singleLine="true" --- */}
                 <horizontal gravity="center_vertical" singleLine="true">
-                    
+
                     {/* --- 核心修改：移除 text, JS中设置 --- */}
                     <button id="backToSequenceListBtn" style="Widget.AppCompat.Button.Borderless.Colored" textColor="{{CONSTANTS.UI.THEME.ACCENT_GRADIENT_START}}" w="40" />
-                    
+
                     {/* --- 核心修改：添加 singleLine 和 ellipsize --- */}
                     <input id="sequenceName" hint="序列名称" layout_weight="1" textSize="16sp" bg="{{CONSTANTS.UI.THEME.PRIMARY_CARD}}" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" singleLine="true" ellipsize="end" />
-                    
+
                     {/* --- 核心修改：改为图标 --- */}
                     <button id="saveSequenceNameBtn" text="💾" style="Widget.AppCompat.Button.Borderless.Colored" textColor="{{CONSTANTS.UI.THEME.ACCENT_GRADIENT_START}}" w="40" />
-                    
+
                     <input id="taskSearchBox" hint="搜索..." ems="4" padding="5" margin="0 4" textSize="18sp" singleLine="true" bg="{{CONSTANTS.UI.THEME.BACKGROUND}}" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" />
-                
+
                 </horizontal>
             </card>
-            
+
             {/* --- 2. 任务列表 --- */}
             <card w="*" margin="1" cardCornerRadius="4dp" cardElevation="4dp" bg="{{CONSTANTS.UI.THEME.PRIMARY_CARD}}" layout_weight="1">
                 <vertical>
@@ -3656,22 +3694,22 @@ function renderTaskListEditor(sequenceKey) {
                     <ScrollView layout_weight="1">
                         <vertical id="taskListContainer" padding="1 1" />
                     </ScrollView>
-                    
+
                     {/* ❌ "添加新步骤" 按钮已从此卡片中移除 ❌ */}
                 </vertical>
             </card>
-            
+
             {/* --- 3. 策略 & 触发器 (已合并 "添加" 按钮) --- */}
             <card w="*" margin="2 1" cardCornerRadius="16dp" cardElevation="4dp" bg="{{CONSTANTS.UI.THEME.PRIMARY_CARD}}">
-                 {/* --- 核心修改：添加了 "addTaskBtn" --- */}
-                 <horizontal padding="8 4">
+                {/* --- 核心修改：添加了 "addTaskBtn" --- */}
+                <horizontal padding="8 4">
                     <button id="addTaskBtn" text="添加步骤" layout_weight="1" style="Widget.AppCompat.Button.Borderless.Colored" textColor="{{CONSTANTS.UI.THEME.ACCENT_GRADIENT_START}}" />
                     <button id="editPolicyBtn" text="执行策略" layout_weight="1" style="Widget.AppCompat.Button.Borderless.Colored" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" />
                     <button id="editTriggersBtn" text="触发器" layout_weight="1" style="Widget.AppCompat.Button.Borderless.Colored" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" />
                 </horizontal>
             </card>
         </vertical>
-    , ui.sequenceEditorView, false);
+        , ui.sequenceEditorView, false);
 
     // 2. 清除旧视图 ("序列列表") 并添加新视图 ("任务列表")
     ui.run(() => {
@@ -3685,10 +3723,10 @@ function renderTaskListEditor(sequenceKey) {
 
         // --- 核心修改：用JS设置返回按钮，并增大字体 ---
         view.sequenceName.setText(sequence.name);
-        view.backToSequenceListBtn.setText("<"); 
+        view.backToSequenceListBtn.setText("<");
         view.backToSequenceListBtn.setTextSize(20); // 增大箭头
         // --- 修改结束 ---
-        
+
         view.backToSequenceListBtn.click(() => {
             ui.run(() => {
                 ui.sequenceEditorView.removeAllViews();
@@ -3711,7 +3749,7 @@ function renderTaskListEditor(sequenceKey) {
             onTextChanged: (text, start, before, count) => {
                 try {
                     populateTaskList(view.taskListContainer, sequence, sequenceKey, text.toString());
-                } catch(e) {
+                } catch (e) {
                     logErrorToScreen("搜索任务时出错: " + e);
                 }
             }
@@ -3724,7 +3762,7 @@ function renderTaskListEditor(sequenceKey) {
         refreshTriggersButton();
 
         // 首次填充列表 (无过滤器)
-        populateTaskList(view.taskListContainer, sequence, sequenceKey, ""); 
+        populateTaskList(view.taskListContainer, sequence, sequenceKey, "");
 
         // --- 核心修改：addTaskBtn 的回调 ---
         view.addTaskBtn.click(() => {
@@ -3737,7 +3775,7 @@ function renderTaskListEditor(sequenceKey) {
 
         view.editPolicyBtn.click(() => {
             showExecutionPolicyEditor(sequence, sequenceKey, () => {
-                refreshTriggersButton(); 
+                refreshTriggersButton();
             });
         });
 
@@ -3826,10 +3864,10 @@ function populateTriggerList(container, sequence, sequenceKey, filterText) {
         // --- 1. 过滤逻辑 ---
         const filteredTriggers = triggers.filter(trigger => {
             if (!filterText) return true;
-            return (trigger.target || "").toLowerCase().includes(filterText) || 
-                   (trigger.type || "").toLowerCase().includes(filterText) ||
-                   (trigger.action.type || "").toLowerCase().includes(filterText) ||
-                   (trigger.action.sequenceName || "").toLowerCase().includes(filterText);
+            return (trigger.target || "").toLowerCase().includes(filterText) ||
+                (trigger.type || "").toLowerCase().includes(filterText) ||
+                (trigger.action.type || "").toLowerCase().includes(filterText) ||
+                (trigger.action.sequenceName || "").toLowerCase().includes(filterText);
         });
 
         if (filteredTriggers.length === 0) {
@@ -3890,17 +3928,17 @@ function populateTriggerList(container, sequence, sequenceKey, filterText) {
             triggerView.enabledCheckbox.click(() => {
                 const isChecked = triggerView.enabledCheckbox.isChecked();
                 trigger.enabled = isChecked;
-                saveCurrentProfileThrottled(); 
+                saveCurrentProfileThrottled();
                 toast(`触发器: ${trigger.target} ${isChecked ? "已启用" : "已禁用"}`);
 
                 if (trigger.enabled === false) {
                     triggerView.triggerInfo.setText(info + "\n(已禁用)");
                     triggerView.triggerInfo.setTextColor(colors.parseColor("#757575"));
                 } else {
-                    triggerView.triggerInfo.setText(info); 
+                    triggerView.triggerInfo.setText(info);
                     triggerView.triggerInfo.setTextColor(colors.parseColor(CONSTANTS.UI.THEME.PRIMARY_TEXT));
                 }
-            });            
+            });
             // --- 核心修复：将 .click() 和 .longClick() 绑定到同一个元素 ---
 
             // 点击文本区域，打开“弹窗”编辑器
@@ -3916,14 +3954,14 @@ function populateTriggerList(container, sequence, sequenceKey, filterText) {
                         if (i === 0) { // 复制
                             dialogs.rawInput("输入新触发器的目标", `${trigger.target}_copy`).then(newTarget => {
                                 if (!newTarget) { toast("目标不能为空"); return; }
-                                const newTrigger = JSON.parse(JSON.stringify(trigger)); 
+                                const newTrigger = JSON.parse(JSON.stringify(trigger));
                                 newTrigger.target = newTarget;
-                                newTrigger.enabled = true; 
-                                delete newTrigger.cachedBounds; 
+                                newTrigger.enabled = true;
+                                delete newTrigger.cachedBounds;
                                 if (!sequence.triggers) sequence.triggers = [];
-                                sequence.triggers.push(newTrigger); 
+                                sequence.triggers.push(newTrigger);
                                 saveCurrentProfileThrottled();
-                                refreshTriggerListCallback(); 
+                                refreshTriggerListCallback();
                                 toast("触发器已复制");
                             });
                         } else if (i === 1) { // 删除
@@ -3931,7 +3969,7 @@ function populateTriggerList(container, sequence, sequenceKey, filterText) {
                                 if (ok) {
                                     triggers.splice(index, 1);
                                     saveCurrentProfileThrottled();
-                                    refreshTriggerListCallback(); 
+                                    refreshTriggerListCallback();
                                     toast("触发器已删除");
                                 }
                             });
@@ -3985,9 +4023,9 @@ function renderTriggerManager(sequence, sequenceKey) {
 
                         {/* --- 视图2: PQ 管理器 (默认隐藏) --- */}
                         <vertical id="pqView" visibility="gone" padding="10">
-                            <text text="触发器优先队列 (Priority Queue)" textStyle="bold" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
-                            <text text="当前队列 (0=最高):" textSize="12sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}"/>
-                            
+                            <text text="触发器优先队列 (Priority Queue)" textStyle="bold" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" />
+                            <text text="当前队列 (0=最高):" textSize="12sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" />
+
                             {/* --- 核心修复：这里添加了 layout_weight="1" --- */}
                             <ScrollView layout_weight="1" bg="{{CONSTANTS.UI.THEME.BACKGROUND}}" padding="4" marginTop="5">
                                 <text id="pq_display" textSize="10sp" textColor="{{CONSTANTS.UI.THEME.SECONDARY_TEXT}}" textIsSelectable="true" />
@@ -3996,7 +4034,7 @@ function renderTriggerManager(sequence, sequenceKey) {
 
                             <horizontal gravity="center_vertical" marginTop="5">
                                 <text textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}">队列最大长度:</text>
-                                <input id="pq_maxLength" inputType="number" layout_weight="1" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
+                                <input id="pq_maxLength" inputType="number" layout_weight="1" textSize="14sp" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" />
                                 <button id="pq_saveBtn" text="保存" style="Widget.AppCompat.Button.Borderless.Colored" />
                             </horizontal>
                             <horizontal gravity="right" marginTop="-10">
@@ -4008,7 +4046,7 @@ function renderTriggerManager(sequence, sequenceKey) {
                 </vertical>
             </card>
         </vertical>
-    , ui.sequenceEditorView, false);
+        , ui.sequenceEditorView, false);
 
     // 2. 切换视图
     ui.run(() => {
@@ -4020,7 +4058,7 @@ function renderTriggerManager(sequence, sequenceKey) {
     ui.post(() => {
         // --- 注册全局搜索框 ---
         ui.triggerSearchBox = view.triggerSearchBox;
-        
+
         // --- 绑定导航 ---
         view.backToTaskListBtn.setText("< 返回任务列表");
         view.backToTaskListBtn.click(() => {
@@ -4036,14 +4074,14 @@ function renderTriggerManager(sequence, sequenceKey) {
                 try {
                     // 确保只在“触发器列表”选项卡激活时才过滤
                     if (view.triggerListView.getVisibility() === 0) {
-                         populateTriggerList(view.triggersContainer, sequence, sequenceKey, text.toString());
+                        populateTriggerList(view.triggersContainer, sequence, sequenceKey, text.toString());
                     }
-                } catch(e) {
+                } catch (e) {
                     logErrorToScreen("搜索触发器时出错: " + e);
                 }
             }
         }));
-        
+
         // --- 绑定嵌套选项卡切换 (新!) ---
         view.triggerTabBtn.click(() => {
             view.triggerListView.setVisibility(0);
@@ -4078,7 +4116,7 @@ function renderTriggerManager(sequence, sequenceKey) {
             view.pq_display.setText(pq.map((id, index) => `${index}: ${id}`).join('\n'));
         }
         view.pq_maxLength.setText(String((sequence.priorityQueueMaxLength !== undefined) ? sequence.priorityQueueMaxLength : 50));
-        
+
         view.pq_saveBtn.click(() => {
             try {
                 const newMaxLengthStr = view.pq_maxLength.getText().toString();
@@ -4086,7 +4124,7 @@ function renderTriggerManager(sequence, sequenceKey) {
                     const newMaxLength = parseInt(newMaxLengthStr);
                     if (newMaxLength >= 0) {
                         sequence.priorityQueueMaxLength = newMaxLength;
-                        saveCurrentProfileThrottled(); 
+                        saveCurrentProfileThrottled();
                         toast("队列设置已保存");
                     } else {
                         toast("队列长度不能为负数");
@@ -4094,18 +4132,18 @@ function renderTriggerManager(sequence, sequenceKey) {
                 }
             } catch (e) { logErrorToScreen("保存在队列长度失败: " + e); toast("保存失败: " + e.message); }
         });
-        
+
         view.pq_clearBtn.click(() => {
             dialogs.confirm("清空优先队列?", "这将重置此监控序列的触发器优先级，恢复为默认排序。").then(ok => {
                 if (ok) {
                     sequence.priorityQueue = [];
-                    saveCurrentProfileThrottled(); 
+                    saveCurrentProfileThrottled();
                     view.pq_display.setText("[队列为空]");
                     toast("优先队列已清空");
                 }
             });
         });
-        
+
         // --- 4. 首次填充列表 ---
         populateTriggerList(view.triggersContainer, sequence, sequenceKey, "");
     });
@@ -4114,15 +4152,15 @@ function renderTriggerManager(sequence, sequenceKey) {
 function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     const isNew = !trigger;
     const triggers = sequence.triggers || [];
-    
+
     // 1. 准备数据副本
     const currentTrigger = isNew ?
-        { type: 'image', target: 'new_image.png', threshold: 0.8, action: { type: 'click', delayMs: 0 }, cooldownMs: 0, cachePadding: (appSettings.defaultCachePadding || 50), onFail: { action: 'skip' }, enabled: true, isTopPriority: false } : 
+        { type: 'image', target: 'new_image.png', threshold: 0.8, action: { type: 'click', delayMs: 0 }, cooldownMs: 0, cachePadding: (appSettings.defaultCachePadding || 50), onFail: { action: 'skip' }, enabled: true, isTopPriority: false } :
         JSON.parse(JSON.stringify(trigger));
 
     // 确保对象结构完整
     if (!currentTrigger.action) currentTrigger.action = { type: 'click' };
-    if (!currentTrigger.onFail) currentTrigger.onFail = { action: 'skip' }; 
+    if (!currentTrigger.onFail) currentTrigger.onFail = { action: 'skip' };
 
     const originalIndex = isNew ? -1 : triggers.indexOf(trigger);
     const currentOrder = isNew ? triggers.length + 1 : originalIndex + 1;
@@ -4224,13 +4262,13 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
 
     const typeMap = { 'image': 0, 'ocr': 1, 'timer_end': 2 };
     view.type.setSelection(typeMap[currentTrigger.type] || 0);
-    
+
     function updateTriggerFields(position) {
         const isImage = position === 0;
         const isOcr = position === 1;
         const isTimer = position === 2;
         view.image_options.setVisibility(isImage ? 0 : 8);
-        view.browse_trigger_image.setVisibility(isImage ? 0 : 8); 
+        view.browse_trigger_image.setVisibility(isImage ? 0 : 8);
         view.ocr_options.setVisibility(isOcr ? 0 : 8);
         view.search_area_label.setVisibility(isTimer ? 8 : 0);
         view.sa_x1.setVisibility(isTimer ? 8 : 0); view.sa_y1.setVisibility(isTimer ? 8 : 0);
@@ -4241,7 +4279,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     }
     updateTriggerFields(typeMap[currentTrigger.type] || 0);
     view.type.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => updateTriggerFields(pos) });
-    
+
     view.browse_trigger_image.click(() => { showImageSelectorDialog((n) => view.target.setText(n)); });
     view.target.setText(currentTrigger.target);
     view.threshold.setText(String(currentTrigger.threshold || 0.8));
@@ -4275,25 +4313,25 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
 
     function updateActionFields(pos) {
         view.click_offset_fields.setVisibility(pos === 0 ? 0 : 8);
-        view.swipe_fields.setVisibility(pos === 3 ? 0 : 8); 
+        view.swipe_fields.setVisibility(pos === 3 ? 0 : 8);
         view.launch_app_fields.setVisibility(pos === 4 ? 0 : 8);
         if (pos === 0) { // Click
             view.click_offsetX.setText(String(currentTrigger.action.offsetX || 0));
             view.click_offsetY.setText(String(currentTrigger.action.offsetY || 0));
         } else if (pos === 3) { // Swipe
-            const isCoords = !!currentTrigger.action.swipeCoords || !currentTrigger.action.swipeVector; 
+            const isCoords = !!currentTrigger.action.swipeCoords || !currentTrigger.action.swipeVector;
             view.swipeMode.setSelection(isCoords ? 1 : 0);
             view.swipe_vector_fields.setVisibility(isCoords ? 8 : 0);
             view.swipe_coords_fields.setVisibility(isCoords ? 0 : 8);
             if (isCoords) {
-                const c = currentTrigger.action.swipeCoords || {}; 
-                view.swipe_startX.setText(String(c.startX||1000)); view.swipe_startY.setText(String(c.startY||1000));
-                view.swipe_endX.setText(String(c.endX||1000)); view.swipe_endY.setText(String(c.endY||500));
-                view.swipe_duration_coords.setText(String(c.duration||appSettings.swipe.duration));
+                const c = currentTrigger.action.swipeCoords || {};
+                view.swipe_startX.setText(String(c.startX || 1000)); view.swipe_startY.setText(String(c.startY || 1000));
+                view.swipe_endX.setText(String(c.endX || 1000)); view.swipe_endY.setText(String(c.endY || 500));
+                view.swipe_duration_coords.setText(String(c.duration || appSettings.swipe.duration));
             } else {
                 const v = currentTrigger.action.swipeVector || {};
-                view.swipe_dx.setText(String(v.dx||0)); view.swipe_dy.setText(String(v.dy||0));
-                view.swipe_duration_vector.setText(String(v.duration||appSettings.swipe.duration));
+                view.swipe_dx.setText(String(v.dx || 0)); view.swipe_dy.setText(String(v.dy || 0));
+                view.swipe_duration_vector.setText(String(v.duration || appSettings.swipe.duration));
             }
         } else if (pos === 4) {
             view.launch_app_name.setText(currentTrigger.action.appName || "");
@@ -4302,7 +4340,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     updateActionFields(actionMap[currentTrigger.action.type] || 0);
     view.actionType.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => updateActionFields(pos) });
     view.swipeMode.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => { view.swipe_vector_fields.setVisibility(pos === 0 ? 0 : 8); view.swipe_coords_fields.setVisibility(pos === 1 ? 0 : 8); } });
-    
+
     if (currentTrigger.action.sequenceName) {
         view.callSequenceCheckbox.setChecked(true);
         view.sequenceName.setVisibility(0);
@@ -4332,12 +4370,12 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     // Helper to read actions
     function readActionFromUI(isFail) {
         let typeIndex, delayStr;
-        if (!isFail) { 
-             typeIndex = view.actionType.getSelectedItemPosition();
-             delayStr = view.actionDelayMs.getText().toString();
-        } else { 
-             typeIndex = view.onFailActionType.getSelectedItemPosition();
-             delayStr = view.onFailActionDelayMs.getText().toString();
+        if (!isFail) {
+            typeIndex = view.actionType.getSelectedItemPosition();
+            delayStr = view.actionDelayMs.getText().toString();
+        } else {
+            typeIndex = view.onFailActionType.getSelectedItemPosition();
+            delayStr = view.onFailActionDelayMs.getText().toString();
         }
 
         let currentTypeStr = "";
@@ -4352,7 +4390,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
         let actionObj = {};
         if (isFail) actionObj.action = currentTypeStr;
         else actionObj.type = currentTypeStr;
-        
+
         actionObj.delayMs = parseInt(delayStr) || 0;
 
         switch (currentTypeStr) {
@@ -4362,13 +4400,13 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
                 break;
             case 'swipe':
                 const isCoords = view.swipeMode.getSelectedItemPosition() === 1;
-                if (!isCoords) { 
+                if (!isCoords) {
                     actionObj.swipeVector = {
                         dx: parseInt(view.swipe_dx.getText().toString()) || 0,
                         dy: parseInt(view.swipe_dy.getText().toString()) || 0,
                         duration: parseInt(view.swipe_duration_vector.getText().toString()) || appSettings.swipe.duration
                     };
-                } else { 
+                } else {
                     actionObj.swipeCoords = {
                         startX: parseInt(view.swipe_startX.getText().toString() || "1000"),
                         startY: parseInt(view.swipe_startY.getText().toString() || "1000"),
@@ -4382,7 +4420,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
                 if (!isFail) actionObj.appName = view.launch_app_name.getText().toString();
                 else actionObj.appName = view.onFail_launch_app_name.getText().toString();
                 break;
-            case 'execute_sequence': 
+            case 'execute_sequence':
                 if (callableSequences.length > 0) {
                     actionObj.sequenceName = callableSequences[view.onFailSequenceName.getSelectedItemPosition()].id;
                 }
@@ -4404,7 +4442,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
         positive: "保存",
         negative: "取消"
     }).on("positive", () => {
-        
+
         let newTriggerData = {};
 
         const typeKeys = ['image', 'ocr', 'timer_end'];
@@ -4413,7 +4451,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
         newTriggerData.threshold = parseFloat(view.threshold.getText().toString()) || 0.8;
         newTriggerData.cooldownMs = parseInt(view.cooldownMs.getText().toString()) || 0;
         newTriggerData.enabled = currentTrigger.enabled !== false;
-        
+
         // --- 保存置顶优先 ---
         newTriggerData.isTopPriority = view.isTopPriority.isChecked();
         // --- 保存结束 ---
@@ -4428,13 +4466,13 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
             const y2 = parseInt(view.sa_y2.getText().toString() || String(device.height));
             const strSum = view.sa_x1.getText().toString() + view.sa_y1.getText().toString() + view.sa_x2.getText().toString() + view.sa_y2.getText().toString();
             if (strSum.length > 0) {
-                 newTriggerData.search_area = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+                newTriggerData.search_area = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
             }
             if (currentTrigger.cachedBounds) newTriggerData.cachedBounds = currentTrigger.cachedBounds;
         }
 
-        newTriggerData.action = readActionFromUI(false); 
-        newTriggerData.onFail = readActionFromUI(true);  
+        newTriggerData.action = readActionFromUI(false);
+        newTriggerData.onFail = readActionFromUI(true);
 
         const newOrder = parseInt(view.order.getText().toString());
         if (isNaN(newOrder) || newOrder < 1) { toast("序号无效"); return; }
@@ -4615,7 +4653,7 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             <vertical id="stop_monitor_fields" visibility="gone"><text>停止监控:</text><spinner id="stop_monitor_name" entries="${monitorEntries}" /></vertical>
         </vertical>
     `;
-    
+
     const view = ui.inflate(viewXML, null, false);
 
     // 1. 加载通用数据
@@ -4647,27 +4685,27 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             view.click_x.setText(String(task.x || 0)); view.click_y.setText(String(task.y || 0));
             view.click_offsetX.setText(String(task.offsetX || 0)); view.click_offsetY.setText(String(task.offsetY || 0));
             break;
-        case 'swipe': 
-            view.swipe_startX.setText(String(task.startX || 0)); view.swipe_startY.setText(String(task.startY || 0)); 
-            view.swipe_endX.setText(String(task.endX || 0)); view.swipe_endY.setText(String(task.endY || 0)); 
-            view.swipe_duration.setText(String(task.duration || 300)); 
+        case 'swipe':
+            view.swipe_startX.setText(String(task.startX || 0)); view.swipe_startY.setText(String(task.startY || 0));
+            view.swipe_endX.setText(String(task.endX || 0)); view.swipe_endY.setText(String(task.endY || 0));
+            view.swipe_duration.setText(String(task.duration || 300));
             break;
-        
+
         case 'ocr':
             view.ocr_textToFind.setText(task.textToFind || "");
             view.ocr_timeout.setText(String(task.timeout || 5000));
-            
+
             // 2a. 加载主动作 (Click, Back, Skip)
-            const ocrActionMap = {'click':0, 'back':1, 'skip':2}; // skip在这里表示"无操作"
+            const ocrActionMap = { 'click': 0, 'back': 1, 'skip': 2 }; // skip在这里表示"无操作"
             const ocrAction = (task.onSuccess && task.onSuccess.action) || 'click';
             view.ocr_onSuccessAction.setSelection(ocrActionMap[ocrAction] || 0);
-            
+
             view.ocr_offsetX.setText(String((task.onSuccess && task.onSuccess.offsetX) || 0));
             view.ocr_offsetY.setText(String((task.onSuccess && task.onSuccess.offsetY) || 0));
-            
+
             // 监听主动作变化 -> 隐藏/显示偏移
             view.ocr_onSuccessAction.setOnItemSelectedListener({
-                onItemSelected: (p,v,pos,id) => { view.ocr_click_offset_fields.setVisibility(pos === 0 ? 0 : 8); }
+                onItemSelected: (p, v, pos, id) => { view.ocr_click_offset_fields.setVisibility(pos === 0 ? 0 : 8); }
             });
             // 初始显示状态
             view.ocr_click_offset_fields.setVisibility(view.ocr_onSuccessAction.getSelectedItemPosition() === 0 ? 0 : 8);
@@ -4683,10 +4721,10 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 var idx = onDemandSequences.findIndex(s => s.id === task.onSuccess.sequenceName);
                 if (idx > -1) view.ocr_onSuccessSequence.setSelection(idx);
             }
-            
+
             // 监听后续操作变化 -> 显示序列选择器
             view.ocr_afterAction.setOnItemSelectedListener({
-                onItemSelected: (p,v,pos,id) => { view.ocr_onSuccessSequence.setVisibility(pos === 1 ? 0 : 8); }
+                onItemSelected: (p, v, pos, id) => { view.ocr_onSuccessSequence.setVisibility(pos === 1 ? 0 : 8); }
             });
             view.ocr_onSuccessSequence.setVisibility(ocrAfterIndex === 1 ? 0 : 8);
 
@@ -4702,7 +4740,7 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 view.ocr_onFailAction.setSelection((task.onFail && task.onFail.action === 'skip') ? 1 : 0);
             }
             view.ocr_onFailAction.setOnItemSelectedListener({
-                onItemSelected: (p,v,pos,id) => { view.ocr_onFailSequence.setVisibility(pos === 2 ? 0 : 8); }
+                onItemSelected: (p, v, pos, id) => { view.ocr_onFailSequence.setVisibility(pos === 2 ? 0 : 8); }
             });
             view.ocr_onFailSequence.setVisibility(view.ocr_onFailAction.getSelectedItemPosition() === 2 ? 0 : 8);
 
@@ -4711,7 +4749,7 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 view.ocr_cache_info.setVisibility(0);
                 view.ocr_cached_bounds_display.setText(`[${task.cachedBounds.left},${task.cachedBounds.top},${task.cachedBounds.right},${task.cachedBounds.bottom}]`);
                 view.ocr_clear_cache_btn.click(() => { task.cachedBounds = null; view.ocr_cache_info.setVisibility(8); toast("缓存已清除"); });
-                view.ocr_copy_cache_btn.click(() => { const b=task.cachedBounds; view.sa_x1.setText(String(b.left)); view.sa_y1.setText(String(b.top)); view.sa_x2.setText(String(b.right)); view.sa_y2.setText(String(b.bottom)); toast("已写入"); });
+                view.ocr_copy_cache_btn.click(() => { const b = task.cachedBounds; view.sa_x1.setText(String(b.left)); view.sa_y1.setText(String(b.top)); view.sa_x2.setText(String(b.right)); view.sa_y2.setText(String(b.bottom)); toast("已写入"); });
             }
             break;
 
@@ -4722,20 +4760,20 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             view.image_timeout.setText(String(task.timeout || 5000));
 
             // 3a. 加载主动作
-            const imgActionMap = {'click':0, 'back':1, 'skip':2};
+            const imgActionMap = { 'click': 0, 'back': 1, 'skip': 2 };
             const imgAction = (task.onSuccess && task.onSuccess.action) || 'click';
             view.image_onSuccessAction.setSelection(imgActionMap[imgAction] || 0);
-            
+
             view.image_offsetX.setText(String((task.onSuccess && task.onSuccess.offsetX) || 0));
             view.image_offsetY.setText(String((task.onSuccess && task.onSuccess.offsetY) || 0));
-            
+
             view.image_onSuccessAction.setOnItemSelectedListener({
-                onItemSelected: (p,v,pos,id) => { view.image_click_offset_fields.setVisibility(pos === 0 ? 0 : 8); }
+                onItemSelected: (p, v, pos, id) => { view.image_click_offset_fields.setVisibility(pos === 0 ? 0 : 8); }
             });
             view.image_click_offset_fields.setVisibility(view.image_onSuccessAction.getSelectedItemPosition() === 0 ? 0 : 8);
 
             // 3b. 加载后续操作
-            let imgAfterIndex = 0; 
+            let imgAfterIndex = 0;
             if (task.onSuccess && task.onSuccess.after === 'sequence') imgAfterIndex = 1;
             else if (task.onSuccess && task.onSuccess.after === 'terminate') imgAfterIndex = 2;
             view.image_afterAction.setSelection(imgAfterIndex);
@@ -4745,9 +4783,9 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 var idx = onDemandSequences.findIndex(s => s.id === task.onSuccess.sequenceName);
                 if (idx > -1) view.image_onSuccessSequence.setSelection(idx);
             }
-            
+
             view.image_afterAction.setOnItemSelectedListener({
-                onItemSelected: (p,v,pos,id) => { view.image_onSuccessSequence.setVisibility(pos === 1 ? 0 : 8); }
+                onItemSelected: (p, v, pos, id) => { view.image_onSuccessSequence.setVisibility(pos === 1 ? 0 : 8); }
             });
             view.image_onSuccessSequence.setVisibility(imgAfterIndex === 1 ? 0 : 8);
 
@@ -4763,7 +4801,7 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 view.image_onFailAction.setSelection((task.onFail && task.onFail.action === 'skip') ? 1 : 0);
             }
             view.image_onFailAction.setOnItemSelectedListener({
-                onItemSelected: (p,v,pos,id) => { view.image_onFailSequence.setVisibility(pos === 2 ? 0 : 8); }
+                onItemSelected: (p, v, pos, id) => { view.image_onFailSequence.setVisibility(pos === 2 ? 0 : 8); }
             });
             view.image_onFailSequence.setVisibility(view.image_onFailAction.getSelectedItemPosition() === 2 ? 0 : 8);
 
@@ -4772,7 +4810,7 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 view.image_cache_info.setVisibility(0);
                 view.image_cached_bounds_display.setText(`x:${task.cachedBounds.x},y:${task.cachedBounds.y},w:${task.cachedBounds.width},h:${task.cachedBounds.height}`);
                 view.image_clear_cache_btn.click(() => { task.cachedBounds = null; view.image_cache_info.setVisibility(8); toast("缓存已清除"); });
-                view.image_copy_cache_btn.click(() => { const b=task.cachedBounds; view.sa_x1.setText(String(b.x)); view.sa_y1.setText(String(b.y)); view.sa_x2.setText(String(b.x+b.width)); view.sa_y2.setText(String(b.y+b.height)); toast("已写入"); });
+                view.image_copy_cache_btn.click(() => { const b = task.cachedBounds; view.sa_x1.setText(String(b.x)); view.sa_y1.setText(String(b.y)); view.sa_x2.setText(String(b.x + b.width)); view.sa_y2.setText(String(b.y + b.height)); toast("已写入"); });
             }
             break;
 
@@ -4783,7 +4821,7 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             view.wfd_findTimeout.setText(String(task.findTimeout || 5000));
             view.wfd_disappearTimeout.setText(String(task.disappearTimeout || 10000));
             if (isImg) view.wfd_threshold.setText(String(task.threshold || 0.8));
-            
+
             function setupWfdSpinner(spinner, seqSpinner, actionObj, defAction, defSeqSelection) {
                 if (actionObj && actionObj.action === 'execute_sequence') {
                     spinner.setSelection(2);
@@ -4804,10 +4842,10 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             // Timeout: Skip(1) else Stop(0)
             setupWfdSpinner(view.wfd_onTimeoutAction, view.wfd_onTimeoutSequence, task.onTimeout, 'skip', 'stop');
 
-            view.wfd_targetType.setOnItemSelectedListener({ onItemSelected: (p,v,pos) => view.wfd_image_options.setVisibility(pos===0?0:8) });
-            view.wfd_onSuccessAction.setOnItemSelectedListener({ onItemSelected: (p,v,pos) => view.wfd_onSuccessSequence.setVisibility(pos===2?0:8) });
-            view.wfd_onFailAction.setOnItemSelectedListener({ onItemSelected: (p,v,pos) => view.wfd_onFailSequence.setVisibility(pos===2?0:8) });
-            view.wfd_onTimeoutAction.setOnItemSelectedListener({ onItemSelected: (p,v,pos) => view.wfd_onTimeoutSequence.setVisibility(pos===2?0:8) });
+            view.wfd_targetType.setOnItemSelectedListener({ onItemSelected: (p, v, pos) => view.wfd_image_options.setVisibility(pos === 0 ? 0 : 8) });
+            view.wfd_onSuccessAction.setOnItemSelectedListener({ onItemSelected: (p, v, pos) => view.wfd_onSuccessSequence.setVisibility(pos === 2 ? 0 : 8) });
+            view.wfd_onFailAction.setOnItemSelectedListener({ onItemSelected: (p, v, pos) => view.wfd_onFailSequence.setVisibility(pos === 2 ? 0 : 8) });
+            view.wfd_onTimeoutAction.setOnItemSelectedListener({ onItemSelected: (p, v, pos) => view.wfd_onTimeoutSequence.setVisibility(pos === 2 ? 0 : 8) });
             break;
 
         case 'launch_app': view.launch_app_name.setText(task.appName || ""); break;
@@ -4851,14 +4889,14 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 const y1Str = view.sa_y1.getText().toString();
                 const x2Str = view.sa_x2.getText().toString();
                 const y2Str = view.sa_y2.getText().toString();
-                
+
                 // 只有当至少有一个框填写了内容时才保存
                 if (x1Str || y1Str || x2Str || y2Str) {
                     const vx1 = parseInt(x1Str || "0");
                     const vy1 = parseInt(y1Str || "0");
                     const vx2 = parseInt(x2Str || String(device.width));
                     const vy2 = parseInt(y2Str || String(device.height));
-                    
+
                     // ✅ 修复：正确计算左上角和右下角，不混淆X和Y
                     task.search_area = [
                         Math.min(vx1, vx2), // Left
@@ -4888,11 +4926,11 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                     task.endX = parseFloat(view.swipe_endX.getText().toString()) || 0; task.endY = parseFloat(view.swipe_endY.getText().toString()) || 0;
                     task.duration = parseInt(view.swipe_duration.getText().toString()) || 300;
                     break;
-                
+
                 case 'ocr':
                     task.textToFind = view.ocr_textToFind.getText().toString();
                     task.timeout = parseInt(view.ocr_timeout.getText().toString()) || 5000;
-                    
+
                     // 保存主动作
                     const ocrActions = ['click', 'back', 'skip']; // 对应 Spinner 索引
                     task.onSuccess = {
@@ -4968,29 +5006,29 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                     task.findTimeout = parseInt(view.wfd_findTimeout.getText().toString()) || 5000;
                     task.disappearTimeout = parseInt(view.wfd_disappearTimeout.getText().toString()) || 10000;
                     if (task.targetType === 'image') task.threshold = parseFloat(view.wfd_threshold.getText().toString()) || 0.8;
-                    
+
                     const getWfdAct = (sp, seqSp, def) => {
                         const idx = sp.getSelectedItemPosition();
                         if (idx === 2) {
                             if (onDemandSequences.length > 0) return { action: 'execute_sequence', sequenceName: onDemandSequences[seqSp.getSelectedItemPosition()].id };
                             return { action: def };
                         }
-                        return { action: idx === 1 ? def : (def==='back'?'skip':'stop') }; // Simplified mapping
+                        return { action: idx === 1 ? def : (def === 'back' ? 'skip' : 'stop') }; // Simplified mapping
                     };
-                    
+
                     const wfdSuccIdx = view.wfd_onSuccessAction.getSelectedItemPosition();
-                    if (wfdSuccIdx===2 && onDemandSequences.length>0) task.onSuccess = { action:'execute_sequence', sequenceName:onDemandSequences[view.wfd_onSuccessSequence.getSelectedItemPosition()].id };
-                    else task.onSuccess = { action: wfdSuccIdx===1?'back':'skip' };
+                    if (wfdSuccIdx === 2 && onDemandSequences.length > 0) task.onSuccess = { action: 'execute_sequence', sequenceName: onDemandSequences[view.wfd_onSuccessSequence.getSelectedItemPosition()].id };
+                    else task.onSuccess = { action: wfdSuccIdx === 1 ? 'back' : 'skip' };
 
                     // Fail: Stop(0), Skip(1), Seq(2)
                     const wfdFailIdx = view.wfd_onFailAction.getSelectedItemPosition();
-                    if (wfdFailIdx===2 && onDemandSequences.length>0) task.onFail = { action:'execute_sequence', sequenceName:onDemandSequences[view.wfd_onFailSequence.getSelectedItemPosition()].id };
-                    else task.onFail = { action: wfdFailIdx===1?'skip':'stop' };
+                    if (wfdFailIdx === 2 && onDemandSequences.length > 0) task.onFail = { action: 'execute_sequence', sequenceName: onDemandSequences[view.wfd_onFailSequence.getSelectedItemPosition()].id };
+                    else task.onFail = { action: wfdFailIdx === 1 ? 'skip' : 'stop' };
 
                     // Timeout: Stop(0), Skip(1), Seq(2)
                     const wfdToutIdx = view.wfd_onTimeoutAction.getSelectedItemPosition();
-                    if (wfdToutIdx===2 && onDemandSequences.length>0) task.onTimeout = { action:'execute_sequence', sequenceName:onDemandSequences[view.wfd_onTimeoutSequence.getSelectedItemPosition()].id };
-                    else task.onTimeout = { action: wfdToutIdx===1?'skip':'stop' };
+                    if (wfdToutIdx === 2 && onDemandSequences.length > 0) task.onTimeout = { action: 'execute_sequence', sequenceName: onDemandSequences[view.wfd_onTimeoutSequence.getSelectedItemPosition()].id };
+                    else task.onTimeout = { action: wfdToutIdx === 1 ? 'skip' : 'stop' };
                     break;
 
                 case 'launch_app': task.appName = view.launch_app_name.getText().toString(); break;
@@ -5027,6 +5065,47 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
  * 【核心函数】获取屏幕截图，并根据设置自动处理灰度化
  * 注意：此函数会返回一个新的 Image 对象，调用者必须负责 recycle()
  */
+/**
+ * 🔥【核心优化】安全更新缓存坐标
+ * 只有当坐标在安全区内时，才更新缓存并保存配置。
+ * * @param {Object} targetObj - 要更新的任务(task)或触发器(trigger)
+ * @param {Object} newBounds - 新的坐标对象
+ */
+function updateCachedBoundsSafe(targetObj, newBounds) {
+    if (!targetObj || !newBounds) return;
+
+    // 1. 获取安全区域 (优先用对象自己的，没有则用默认值)
+    // 默认安全区: [0, 80, 1080, 2200] (避开状态栏和底部手势条)
+    let safeArea = targetObj.safeArea || (appSettings.defaultSafeArea ? appSettings.defaultSafeArea : [0, 80, 1080, 2200]);
+
+    // 2. 提取 X, Y 坐标用于检查
+    let checkX, checkY;
+
+    if (newBounds.x !== undefined) { // 格式 A: {x, y, width, height} (用于找图)
+        checkX = newBounds.x;
+        checkY = newBounds.y;
+    } else if (newBounds.left !== undefined) { // 格式 B: {left, top...} (用于OCR)
+        checkX = newBounds.left;
+        checkY = newBounds.top;
+    } else {
+        return; // 未知格式，不处理
+    }
+
+    // 3. 执行越界检查
+    if (safeArea && safeArea.length === 4) {
+        let [minX, minY, maxX, maxY] = safeArea;
+        // 只要左上角超出范围，就视为误识别
+        if (checkX < minX || checkX > maxX || checkY < minY || checkY > maxY) {
+            logErrorToScreen(`⚠️ 坐标(${parseInt(checkX)}, ${parseInt(checkY)}) 超出安全区，放弃更新缓存。`);
+            return; // ⛔ 拒绝更新
+        }
+    }
+
+    // 4. 安全检查通过 -> 更新并保存
+    targetObj.cachedBounds = newBounds;
+    saveCurrentProfileThrottled();
+    // logToScreen("✅ 缓存坐标已更新");
+}
 function captureAndProcessScreen() {
     let raw = captureScreen();
     if (!raw) return null;
@@ -5080,7 +5159,7 @@ function cleanupTempCropFile() {
 // =================================================================================
 function showImageSelectorDialog(onImageSelected) {
     let imageDir = CONSTANTS.FILES.IMAGE_DIR;
-    
+
     if (!files.exists(imageDir)) {
         files.ensureDir(imageDir);
         toast("图片目录 'images' 不存在，已自动创建。");
@@ -5089,16 +5168,16 @@ function showImageSelectorDialog(onImageSelected) {
     // 1. 创建 UI 框架
     const view = ui.inflate(
         <FrameLayout>
-            <ScrollView> 
-                <vertical id="image_list_container" padding="5"/>
+            <ScrollView>
+                <vertical id="image_list_container" padding="5" />
             </ScrollView>
         </FrameLayout>, null, false
     );
 
     // 2. 动态设置高度
-    let heightInPixels = Math.round(400 * device.density); 
+    let heightInPixels = Math.round(400 * device.density);
     let layoutParams = new android.widget.FrameLayout.LayoutParams(
-        android.view.ViewGroup.LayoutParams.MATCH_PARENT, 
+        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
         heightInPixels
     );
     view.setLayoutParams(layoutParams);
@@ -5113,15 +5192,15 @@ function showImageSelectorDialog(onImageSelected) {
     function refreshImageList() {
         ui.run(() => {
             view.image_list_container.removeAllViews();
-            
+
             let imageFiles = files.listDir(imageDir, (name) => {
                 name = name.toLowerCase();
                 return name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg");
             });
-            
+
             if (!imageFiles || imageFiles.length === 0) {
-                 view.image_list_container.addView(ui.inflate(<text text="暂无图片，请点击主界面“新建”" gravity="center" padding="20" textColor="#999999"/>, null, false));
-                 return;
+                view.image_list_container.addView(ui.inflate(<text text="暂无图片，请点击主界面“新建”" gravity="center" padding="20" textColor="#999999" />, null, false));
+                return;
             }
 
             imageFiles.sort();
@@ -5130,34 +5209,34 @@ function showImageSelectorDialog(onImageSelected) {
                 const itemView = ui.inflate(
                     <card w="*" margin="4 2" cardCornerRadius="6dp" cardElevation="2dp" bg="{{CONSTANTS.UI.THEME.SECONDARY_CARD}}">
                         <horizontal w="*" gravity="center_vertical" padding="12 8" bg="?attr/selectableItemBackground">
-                            <text id="image_icon" text="🖼️" textSize="16sp" marginRight="8"/>
-                            <text id="image_name_label" 
-                                textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}" 
+                            <text id="image_icon" text="🖼️" textSize="16sp" marginRight="8" />
+                            <text id="image_name_label"
+                                textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"
                                 textSize="14sp"
                                 layout_weight="1"
-                                />
-                             <text text="⋮" textColor="#888888" textSize="16sp" padding="4"/>
+                            />
+                            <text text="⋮" textColor="#888888" textSize="16sp" padding="4" />
                         </horizontal>
-                    </card>, 
+                    </card>,
                     view.image_list_container, false
                 );
 
                 itemView.image_name_label.setText(fileName);
-                
+
                 // --- 点击：选择图片 ---
                 itemView.click(() => {
-                    onImageSelected(fileName); 
+                    onImageSelected(fileName);
                     dialog.dismiss();
                 });
-                
+
                 // --- 长按：弹出管理菜单 ---
                 itemView.longClick(() => {
                     // 新增了 "预览" 选项
                     const options = ["👁️ 预览 (Preview)", "✏️ 重命名 (Rename)", "🗑️ 删除 (Delete)", "取消"];
-                    
+
                     dialogs.select(`操作: ${fileName}`, options).then(i => {
                         if (i < 0 || i === 3) return; // 取消
-                        
+
                         const fullPath = files.join(imageDir, fileName);
 
                         if (i === 0) { // 预览
@@ -5167,13 +5246,13 @@ function showImageSelectorDialog(onImageSelected) {
                             } catch (e) {
                                 toast("无法打开预览，请检查是否有相册应用");
                             }
-                        } 
+                        }
                         else if (i === 1) { // 重命名
                             dialogs.rawInput("请输入新文件名", fileName).then(newName => {
                                 if (!newName) return;
                                 newName = newName.trim();
                                 if (newName === fileName) return;
-                                
+
                                 if (!newName.toLowerCase().match(/\.(png|jpg|jpeg)$/)) {
                                     const ext = fileName.substring(fileName.lastIndexOf("."));
                                     newName += ext;
@@ -5187,18 +5266,18 @@ function showImageSelectorDialog(onImageSelected) {
 
                                 if (files.rename(fullPath, newName)) {
                                     toast("重命名成功");
-                                    refreshImageList(); 
+                                    refreshImageList();
                                 } else {
                                     toast("重命名失败");
                                 }
                             });
-                        } 
+                        }
                         else if (i === 2) { // 删除
                             dialogs.confirm("确认删除?", `将永久删除图片:\n${fileName}`).then(ok => {
                                 if (ok) {
                                     if (files.remove(fullPath)) {
                                         toast("已删除");
-                                        refreshImageList(); 
+                                        refreshImageList();
                                     } else {
                                         toast("删除失败");
                                     }
@@ -5206,9 +5285,9 @@ function showImageSelectorDialog(onImageSelected) {
                             });
                         }
                     });
-                    return true; 
+                    return true;
                 });
-                
+
                 view.image_list_container.addView(itemView);
             });
         });
@@ -5338,10 +5417,10 @@ function refreshAllUI() {
     if (uiRefs.targetView && uiRefs.targetView.root) {
         try { uiRefs.targetView.root.setBackgroundColor(android.graphics.Color.parseColor(appSettings.theme.targetViewColor)); } catch (e) { logErrorToScreen("目标视图颜色格式错误"); }
     }
-    
+
     // 重绘悬浮窗任务点
     recreateAllTaskVisuals();
-    
+
     // 更新悬浮窗位置和文本 (异步)
     ui.post(() => {
         if (appState.isFloatyCreated) {
@@ -5380,18 +5459,18 @@ function updatePositionDisplay() {
         ui.run(() => {
             if (uiRefs.controlPanel && uiRefs.controlPanel.positionText) {
                 if (appSettings.showPanelCoordinates) {
-                    
+
                     // 1. 获取悬浮窗的“逻辑”坐标
                     let logicalX = uiRefs.controlPanel.getX();
                     let logicalY = uiRefs.controlPanel.getY();
-                    
+
                     // 2. 计算“视觉”坐标 (y + offset)
                     let visualY = logicalY + (appSettings.yOffset || statusBarHeight);
-                    
+
                     // 3. 使用您喜欢的 "X/Y" 格式显示“视觉”坐标
                     // (四舍五入以防万一)
-                    uiRefs.controlPanel.positionText.setText(`${Math.round(logicalX)}/${Math.round(visualY)}`); 
-                    
+                    uiRefs.controlPanel.positionText.setText(`${Math.round(logicalX)}/${Math.round(visualY)}`);
+
                     uiRefs.controlPanel.positionText.setVisibility(0);
                 } else {
                     uiRefs.controlPanel.positionText.setVisibility(8);
@@ -5400,18 +5479,18 @@ function updatePositionDisplay() {
         });
     }
 }
-function updateProfileNameDisplay() { 
-    if (uiRefs.controlPanel && uiRefs.controlPanel.profileNameText) { 
-        let displayName = currentProfileName.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', ''); 
-        
+function updateProfileNameDisplay() {
+    if (uiRefs.controlPanel && uiRefs.controlPanel.profileNameText) {
+        let displayName = currentProfileName.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', '');
+
         // --- 核心修改：只使用 displayName ---
-        let displayText = displayName; 
-        
-        ui.run(() => { 
-            if (uiRefs.controlPanel && uiRefs.controlPanel.profileNameText) 
-                uiRefs.controlPanel.profileNameText.setText(displayText); 
-        }); 
-    } 
+        let displayText = displayName;
+
+        ui.run(() => {
+            if (uiRefs.controlPanel && uiRefs.controlPanel.profileNameText)
+                uiRefs.controlPanel.profileNameText.setText(displayText);
+        });
+    }
 }
 function populateGraphicalSettings() {
     if (ui.clickDelayInput) {
@@ -5492,8 +5571,8 @@ function validateNumericInput(inputStr, allowFloat = false, allowSigned = false)
 function calculatePaddedRegion(bounds, padding, imgW, imgH) {
     try {
         let x1_orig, y1_orig, x2_orig, y2_orig;
-        padding = padding || 0; 
-        
+        padding = padding || 0;
+
         // 1. 获取限制尺寸
         const limitW = imgW || getRealWidth();
         const limitH = imgH || getRealHeight();
@@ -5510,10 +5589,10 @@ function calculatePaddedRegion(bounds, padding, imgW, imgH) {
             x2_orig = bounds.x + bounds.width + padding;
             y2_orig = bounds.y + bounds.height + padding;
         } else if (Array.isArray(bounds) && bounds.length === 4) {
-             x1_orig = bounds[0] - padding;
-             y1_orig = bounds[1] - padding;
-             x2_orig = bounds[2] + padding;
-             y2_orig = bounds[3] + padding;
+            x1_orig = bounds[0] - padding;
+            y1_orig = bounds[1] - padding;
+            x2_orig = bounds[2] + padding;
+            y2_orig = bounds[3] + padding;
         } else {
             return [0, 0, 10, 10];
         }
@@ -5529,7 +5608,7 @@ function calculatePaddedRegion(bounds, padding, imgW, imgH) {
         let final_x1 = Math.max(0, Math.min(x1_orig, limitW - 1));
         // 确保 x2 最大只能是 limitW (例如 1080)
         let final_x2 = Math.max(final_x1 + 1, Math.min(x2_orig, limitW));
-        
+
         let final_y1 = Math.max(0, Math.min(y1_orig, limitH - 1));
         let final_y2 = Math.max(final_y1 + 1, Math.min(y2_orig, limitH));
 
@@ -5538,14 +5617,14 @@ function calculatePaddedRegion(bounds, padding, imgW, imgH) {
 
         // --- 🔴 调试日志 B：输出修正结果 ---
         if (x1_orig > limitW - 100 || final_x1 + w > limitW) {
-             logToScreen(`[✅调试-计算后] 修正: x=${final_x1}, w=${w}, end=${final_x1+w} | 安全? ${(final_x1+w <= limitW)}`);
+            logToScreen(`[✅调试-计算后] 修正: x=${final_x1}, w=${w}, end=${final_x1 + w} | 安全? ${(final_x1 + w <= limitW)}`);
         }
 
         return [final_x1, final_y1, w, h];
 
     } catch (e) {
         logErrorToScreen("[RegionCalc Error] " + e);
-        return [0, 0, 10, 10]; 
+        return [0, 0, 10, 10];
     }
 }
 // =================================================================================
@@ -5562,22 +5641,22 @@ function safePress(x, y, duration) {
     try {
         // 1. 将最终坐标限制在屏幕范围内
         // (使用 Math.round 以防坐标是浮点数, 并减 1 防止越界)
-         // (需要 getRealWidth/Height 和 _clamp 辅助函数)
+        // (需要 getRealWidth/Height 和 _clamp 辅助函数)
         const realWidth = getRealWidth();
         const realHeight = getRealHeight();
-        let ry=realHeight;
-        let rx=realWidth;
+        let ry = realHeight;
+        let rx = realWidth;
         let clampedX = Math.round(Math.max(0, Math.min(x, rx - 1)));
         let clampedY = Math.round(Math.max(0, Math.min(y, ry - 1)));
-        
+
         // 2. 检查坐标是否被修正
         if (clampedX !== Math.round(x) || clampedY !== Math.round(y)) {
-             logErrorToScreen(`[safePress] 坐标越界修正: (${Math.round(x)}, ${Math.round(y)}) -> (${clampedX}, ${clampedY})(屏幕: ${rx}x${ry})`);
+            logErrorToScreen(`[safePress] 坐标越界修正: (${Math.round(x)}, ${Math.round(y)}) -> (${clampedX}, ${clampedY})(屏幕: ${rx}x${ry})`);
         }
 
         // 3. 执行点击 (调用 Auto.js 原始的 press() 函数)
         press(clampedX, clampedY, duration);
-        
+
     } catch (e) {
         logErrorToScreen(`[safePress Error] ${e} (Input: ${x},${y})`);
     }
@@ -5696,7 +5775,14 @@ function loadProfile(profileName) {
             } else {
                 sequences = {};
             }
-
+            // =========== 🔥【插入点】在这里调用 🔥 ===========
+            // 数据加载进内存后，立即进行标准化清洗（补全 safeArea）
+            try {
+                normalizeProfileData();
+            } catch (e) {
+                logErrorToScreen("配置标准化失败(非致命): " + e);
+            }
+            // ==============================================
             currentProfileName = profileName;
 
             // 【MRU 核心修改】: 更新时间戳并保存元数据
@@ -5747,12 +5833,12 @@ function showProfileManager() {
     if (isBusy()) return;
 
     // --- A. 准备数据 ---
-    const allSequences = Object.entries(sequences).map(([key, seq]) => ({ 
-        id: key, 
+    const allSequences = Object.entries(sequences).map(([key, seq]) => ({
+        id: key,
         name: seq.name || key,
         isMonitor: seq.executionPolicy && seq.executionPolicy.mode === 'monitor'
     }));
-    
+
     // 分类
     const normalSeqOptions = allSequences.filter(s => !s.isMonitor);
     const monitorSeqOptions = allSequences.filter(s => s.isMonitor);
@@ -5782,9 +5868,9 @@ function showProfileManager() {
             <card w="*" margin="4 4 4 4" cardCornerRadius="8dp" cardElevation="2dp" bg="#F5F5F5">
                 <vertical padding="10">
                     <horizontal gravity="center_vertical">
-                        <text text="权限状态：" textStyle="bold" textColor="#333333" textSize="12sp"/>
-                        <text id="permStatusText" text="检测中..." layout_weight="1" textColor="#757575" textSize="12sp"/>
-                        <button id="repairPermBtn" text="🛠️ 修复" style="Widget.AppCompat.Button.Colored" h="35dp" textSize="12sp"/>
+                        <text text="权限状态：" textStyle="bold" textColor="#333333" textSize="12sp" />
+                        <text id="permStatusText" text="检测中..." layout_weight="1" textColor="#757575" textSize="12sp" />
+                        <button id="repairPermBtn" text="🛠️ 修复" style="Widget.AppCompat.Button.Colored" h="35dp" textSize="12sp" />
                     </horizontal>
                 </vertical>
             </card>
@@ -5792,16 +5878,16 @@ function showProfileManager() {
             {/* 2. 快速设置卡片 */}
             <card w="*" margin="4 0 4 8" cardCornerRadius="8dp" cardElevation="2dp" bg="#E3F2FD">
                 <vertical padding="10">
-                    <text text="⚡ 快速设置 (主任务/主监控)" textStyle="bold" textColor="#1565C0" textSize="12sp" marginBottom="5"/>
-                    
+                    <text text="⚡ 快速设置 (主任务/主监控)" textStyle="bold" textColor="#1565C0" textSize="12sp" marginBottom="5" />
+
                     <horizontal gravity="center_vertical">
-                        <text text="⭐ 主序列:" w="60dp" textColor="#333333" textSize="12sp"/>
+                        <text text="⭐ 主序列:" w="60dp" textColor="#333333" textSize="12sp" />
                         {/* 移除 entries 属性，改用代码设置 */}
                         <spinner id="mainSeqSpinner" layout_weight="1" />
                     </horizontal>
-                    
+
                     <horizontal gravity="center_vertical" marginTop="-5">
-                        <text text="🧿 主监控:" w="60dp" textColor="#333333" textSize="12sp"/>
+                        <text text="🧿 主监控:" w="60dp" textColor="#333333" textSize="12sp" />
                         {/* 移除 entries 属性，改用代码设置 */}
                         <spinner id="mainMonSpinner" layout_weight="1" />
                     </horizontal>
@@ -5809,11 +5895,11 @@ function showProfileManager() {
             </card>
 
             {/* 3. 方案列表区域 */}
-            <text text="📂 方案列表 (长按管理)" textSize="12sp" textColor="#757575" marginLeft="8"/>
-            <ScrollView h="300dp"> 
+            <text text="📂 方案列表 (长按管理)" textSize="12sp" textColor="#757575" marginLeft="8" />
+            <ScrollView h="300dp">
                 <vertical id="sequenceListContainer" />
             </ScrollView>
-            
+
             {/* 4. 底部按钮 */}
             <horizontal>
                 <button id="showAppBtn" text="返回主窗口" layout_weight="1" style="Widget.AppCompat.Button.Borderless.Colored" />
@@ -5840,7 +5926,7 @@ function showProfileManager() {
     if (currentProfileName) {
         displayName = currentProfileName.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', '');
     }
-    
+
     const dialog = dialogs.build({
         customView: dialogView,
         title: `方案与设置 (当前: ${displayName})`,
@@ -5867,30 +5953,30 @@ function showProfileManager() {
 
     dialogView.mainMonSpinner.setOnItemSelectedListener({
         onItemSelected: (parent, view, position, id) => {
-             if (position >= 0 && position < monitorSeqOptions.length) {
+            if (position >= 0 && position < monitorSeqOptions.length) {
                 const selectedId = monitorSeqOptions[position].id;
                 if (selectedId !== appSettings.mainMonitorKey) {
                     appSettings.mainMonitorKey = selectedId;
                     saveCurrentProfileThrottled();
                     toast(`主监控已更新`);
                 }
-             }
+            }
         }
     });
 
 
     // --- D. 绑定逻辑: 权限检测与修复 ---
     function updatePermissionStatusUI() {
-        threads.start(function(){
+        threads.start(function () {
             let floatyOk = floaty.hasPermission();
             let screenOk = false;
             try {
                 let img = captureScreen();
-                if(img) { screenOk = true; img.recycle(); }
-            } catch(e) {}
+                if (img) { screenOk = true; img.recycle(); }
+            } catch (e) { }
 
             ui.run(() => {
-                if(!dialogView.permStatusText) return;
+                if (!dialogView.permStatusText) return;
                 let statusStr = (floatyOk ? "窗✅ " : "窗❌ ") + (screenOk ? "图✅" : "图❌");
                 dialogView.permStatusText.setText(statusStr);
                 dialogView.permStatusText.setTextColor(colors.parseColor((floatyOk && screenOk) ? "#4CAF50" : "#F44336"));
@@ -5903,16 +5989,16 @@ function showProfileManager() {
         // 防止重复点击
         dialogView.repairPermBtn.setEnabled(false);
         dialogView.repairPermBtn.setText("正在唤起...");
-        
-        threads.start(function(){
+
+        threads.start(function () {
             // --- 核心修复开始 ---
             // 1. 强制拉起主界面到前台
             // (Android 10+ 必须在前台才能申请录屏权限，否则会被系统拦截不弹窗)
             app.launch(context.getPackageName());
-            
+
             // 2. 稍微等待一下，确保界面已经浮现
-            sleep(500); 
-            
+            sleep(500);
+
             // 3. 再请求权限 (此时应用在前台，弹窗会立即出现)
             // 注意：requestScreenCapture 是阻塞的，直到用户点击允许/取消
             let success = requestScreenCapture();
@@ -5921,13 +6007,13 @@ function showProfileManager() {
             ui.run(() => {
                 dialogView.repairPermBtn.setEnabled(true);
                 dialogView.repairPermBtn.setText("🛠️ 修复");
-                
-                if(success) {
+
+                if (success) {
                     toast("✅ 截图权限已修复！");
                 } else {
                     toast("⚠️ 权限申请被取消");
                 }
-                
+
                 // 重新检测并刷新显示
                 updatePermissionStatusUI();
             });
@@ -5941,26 +6027,26 @@ function showProfileManager() {
     function populateSequenceListRefined(container) {
         ui.run(() => {
             container.removeAllViews();
-            
+
             // 1. 添加 "新建方案" 按钮
             const newProfileView = ui.inflate(
-                <card w="*" margin="8 4" cardCornerRadius="8dp" cardElevation="2dp" bg="#E8F5E9"> 
+                <card w="*" margin="8 4" cardCornerRadius="8dp" cardElevation="2dp" bg="#E8F5E9">
                     <horizontal w="*" gravity="center_vertical" padding="16 12">
                         <text text="➕" textSize="18sp" marginRight="12" />
-                        <text text="【创建新方案】" layout_weight="1" textColor="#2E7D32" textStyle="bold"/>
+                        <text text="【创建新方案】" layout_weight="1" textColor="#2E7D32" textStyle="bold" />
                     </horizontal>
                 </card>, container, false);
-            
+
             newProfileView.click(() => {
                 dialogs.rawInput("输入新方案名称", "my_profile").then(name => {
                     if (!name) return;
                     const newFileName = CONSTANTS.FILES.PROFILE_PREFIX + name.trim() + ".json";
                     const newPath = files.join(CONSTANTS.FILES.CONFIG_DIR, newFileName);
                     if (files.exists(newPath)) { toast("方案已存在"); return; }
-                    
+
                     const emptyProfile = { version: CONSTANTS.VERSION, settings: DEFAULT_SETTINGS, sequences: {} };
                     files.write(newPath, JSON.stringify(emptyProfile, null, 2));
-                    
+
                     loadProfile(newFileName);
                     saveCurrentProfileThrottled();
                     refreshAllUI();
@@ -5982,10 +6068,10 @@ function showProfileManager() {
                 return a.name.localeCompare(b.name);
             });
 
-            sortedProfiles.forEach((item) => { 
+            sortedProfiles.forEach((item) => {
                 const key = item.name;
                 const displayName = key.replace(CONSTANTS.FILES.PROFILE_PREFIX, '').replace('.json', '');
-                
+
                 const itemView = ui.inflate(
                     <card w="*" margin="8 4" cardCornerRadius="8dp" cardElevation="2dp" bg="{{CONSTANTS.UI.THEME.SECONDARY_CARD}}">
                         <horizontal w="*" gravity="center_vertical" padding="16 12">
@@ -5999,25 +6085,25 @@ function showProfileManager() {
                 itemView.seqName.setText(displayName);
 
                 itemView.click(() => {
-                    if (loadProfile(key)) { 
-                        saveCurrentProfileThrottled(); 
-                        refreshAllUI(); 
+                    if (loadProfile(key)) {
+                        saveCurrentProfileThrottled();
+                        refreshAllUI();
                         dialog.dismiss();
-                        toast(`已加载: ${displayName}`); 
+                        toast(`已加载: ${displayName}`);
                     }
                 });
 
                 itemView.longClick(() => {
                     const actions = ["另存为...", "删除"];
                     if (key === CONSTANTS.FILES.PROFILE_PREFIX + "default.json") actions.pop();
-                    
+
                     dialogs.select(`操作: ${displayName}`, actions).then(i => {
                         if (i < 0) return;
                         if (actions[i] === "另存为...") {
                             dialogs.rawInput("另存为", `${displayName}_copy`).then(newName => {
-                                if(!newName) return;
+                                if (!newName) return;
                                 const newPath = files.join(CONSTANTS.FILES.CONFIG_DIR, CONSTANTS.FILES.PROFILE_PREFIX + newName + ".json");
-                                if(files.exists(newPath)) { toast("已存在"); return; }
+                                if (files.exists(newPath)) { toast("已存在"); return; }
                                 files.copy(files.join(CONSTANTS.FILES.CONFIG_DIR, key), newPath);
                                 loadProfile(CONSTANTS.FILES.PROFILE_PREFIX + newName + ".json");
                                 saveCurrentProfileThrottled();
@@ -6027,9 +6113,9 @@ function showProfileManager() {
                             });
                         } else if (actions[i] === "删除") {
                             dialogs.confirm("确认删除?", displayName).then(ok => {
-                                if(ok) {
+                                if (ok) {
                                     files.remove(files.join(CONSTANTS.FILES.CONFIG_DIR, key));
-                                    if(currentProfileName === key) { resetToDefaultProfile(); refreshAllUI(); }
+                                    if (currentProfileName === key) { resetToDefaultProfile(); refreshAllUI(); }
                                     populateSequenceListRefined(container);
                                     toast("已删除");
                                 }
@@ -6044,7 +6130,7 @@ function showProfileManager() {
     }
 
     dialogView.showAppBtn.click(() => {
-        app.launch(context.getPackageName()); 
+        app.launch(context.getPackageName());
         toast("正在显示主窗口...");
         dialog.dismiss();
     });
