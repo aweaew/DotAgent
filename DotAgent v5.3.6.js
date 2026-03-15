@@ -223,7 +223,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.5 搜索区域安全化",
+    VERSION: "5.3.6 升级6.7.0替换PaddleOCR为MLKit",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -991,7 +991,10 @@ function handleOcrSuccess(ocrResult, successAction) {
             let targetBounds = ocrResult.bounds;
             let clickX = targetBounds.centerX() + ocrOffsetX;
             let clickY = targetBounds.centerY() + ocrOffsetY;
-            logToScreen(`对 "${ocrResult.label}" 执行点击操作 at (${clickX}, ${clickY}) (偏移: ${ocrOffsetX},${ocrOffsetY})`);
+            // 修改为:
+            let recognizedText = ocrResult.label || ocrResult.text || "未知文本";
+            logToScreen(`对 "${recognizedText}" 执行点击操作 at (${clickX}, ${clickY}) (偏移: ${ocrOffsetX},${ocrOffsetY})`);
+            //logToScreen(`对 "${ocrResult.label}" 执行点击操作 at (${clickX}, ${clickY}) (偏移: ${ocrOffsetX},${ocrOffsetY})`);
             showClickDot(clickX, clickY);
             safePress(clickX, clickY, CONSTANTS.UI.CLICK_PRESS_DURATION_MS);
             sleep(appSettings.clickDelayMs);
@@ -1208,8 +1211,8 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                         var b = task.cachedBounds;
                         var padding = (task.cachePadding !== undefined) ? task.cachePadding : (appSettings.defaultCachePadding || 50);
                         var region = calculatePaddedRegion(b, padding);
-                        var ocrResults = ocr.paddle.detect(captured, { region: region, useSlim: true });
-                        var target = ocrResults.find(r => r.label.includes(task.textToFind));
+                        var ocrResults = ocr.mlkit.detect(captured, { region: region });
+                        var target = ocrResults.find(r => (r.label || r.text || "").includes(task.textToFind));
                         if (target) {
                             logToScreen("... 缓存命中");
                             foundResult = target;
@@ -1217,26 +1220,27 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                         captured.recycle();
                     }
                 }
-
                 // --- 2. 全屏/区域搜索 ---
                 if (!foundResult) {
                     var startTime = new Date().getTime();
                     while (new Date().getTime() - startTime < timeout) {
                         if (getStopSignal(contextType) || threads.currentThread().isInterrupted()) break;
 
-                        var captured = captureAndProcessScreen(); // <--- 替换这里
+                        var captured = captureAndProcessScreen();
                         if (!captured) { sleep(1000); continue; }
 
-                        var ocrOptions = { useSlim: true };
+                        var ocrOptions = {}; // 移除 useSlim
                         if (task.search_area && task.search_area.length === 4) {
                             var [x1, y1, x2, y2] = task.search_area;
                             var searchBounds = { left: x1, top: y1, right: x2, bottom: y2 };
                             ocrOptions.region = calculatePaddedRegion(searchBounds, 0);
                         }
-                        var ocrResults = ocr.paddle.detect(captured, ocrOptions);
+                        // 👇 替换为 MLKit
+                        var ocrResults = ocr.mlkit.detect(captured, ocrOptions);
                         captured.recycle();
 
-                        var target = ocrResults.find(r => r.label.includes(task.textToFind));
+                        // 👇 兼容文本字段
+                        var target = ocrResults.find(r => (r.label || r.text || "").includes(task.textToFind));
                         if (target) {
                             foundResult = target;
                             let b = target.bounds;
@@ -1439,7 +1443,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     // =========== 🔴【添加这段代码】结束 ===========
                     findOptions = { threshold: task.threshold || 0.8 };
                 } else { // ocr
-                    findOptions = { useSlim: true };
+                    findOptions = {};
                 }
 
                 if (task.search_area && task.search_area.length === 4) {
@@ -1467,8 +1471,8 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     if (task.targetType === 'image') {
                         result = images.findImage(captured, imageTemplate, findOptions);
                     } else { // ocr
-                        let ocrResults = ocr.paddle.detect(captured, findOptions);
-                        result = ocrResults.find(r => r.label.includes(task.target));
+                        let ocrResults = ocr.mlkit.detect(captured, findOptions);
+                        result = ocrResults.find(r => (r.label || r.text || "").includes(task.target));
                     }
                     captured.recycle();
 
@@ -1514,8 +1518,8 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                     if (task.targetType === 'image') {
                         result = images.findImage(captured, imageTemplate, findOptions);
                     } else { // ocr
-                        let ocrResults = ocr.paddle.detect(captured, findOptions);
-                        result = ocrResults.find(r => r.label.includes(task.target));
+                        let ocrResults = ocr.mlkit.detect(captured, findOptions);
+                        result = ocrResults.find(r => (r.label || r.text || "").includes(task.target));
                     }
                     captured.recycle();
 
@@ -2035,11 +2039,8 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                 try {
                                     subImg = images.clip(capturedImage, r[0], r[1], r[2], r[3]);
 
-                                    // 3. 识别小图片 (不传 region 参数)
-                                    let ocrResults = ocr.paddle.detect(subImg, { useSlim: true });
-
-                                    // 4. 坐标回补 (将小图坐标转换为大图坐标)
-                                    ocrTarget = ocrResults.find(res => res.label.includes(trigger.target));
+                                    let ocrResults = ocr.mlkit.detect(subImg); // 如果是 fullScreen 就是 ocr.mlkit.detect(capturedImage);
+                                    ocrTarget = ocrResults.find(res => (res.label || res.text || "").includes(trigger.target));
 
                                     if (ocrTarget) {
                                         // 这里的 bounds 是相对 subImg 的，加上偏移量 r[0], r[1]
@@ -2067,8 +2068,8 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                     let subImg = null;
                                     try {
                                         subImg = images.clip(capturedImage, searchRegion[0], searchRegion[1], searchRegion[2], searchRegion[3]);
-                                        let ocrResults = ocr.paddle.detect(subImg, { useSlim: true });
-                                        ocrTarget = ocrResults.find(res => res.label.includes(trigger.target));
+                                        let ocrResults = ocr.mlkit.detect(subImg); // 如果是 fullScreen 就是 ocr.mlkit.detect(capturedImage);
+                                        ocrTarget = ocrResults.find(res => (res.label || res.text || "").includes(trigger.target));
                                         if (ocrTarget) {
                                             ocrTarget.bounds.left += searchRegion[0];
                                             ocrTarget.bounds.top += searchRegion[1];
@@ -2078,8 +2079,9 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                     } catch (e) { } finally { if (subImg) subImg.recycle(); }
                                 } else {
                                     // 全屏识别 (直接跑)
-                                    let ocrResults = ocr.paddle.detect(capturedImage, { useSlim: true });
-                                    ocrTarget = ocrResults.find(res => res.label.includes(trigger.target));
+            
+                                    let ocrResults = ocr.mlkit.detect(capturedImage); // 如果是 fullScreen 就是 ocr.mlkit.detect(capturedImage);
+                                    ocrTarget = ocrResults.find(res => (res.label || res.text || "").includes(trigger.target));
                                 }
 
                                 if (ocrTarget) {
