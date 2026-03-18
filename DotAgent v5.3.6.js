@@ -5108,8 +5108,45 @@ function updateCachedBoundsSafe(targetObj, newBounds) {
     saveCurrentProfileThrottled();
     // logToScreen("✅ 缓存坐标已更新");
 }
+/**
+ * 【核心函数】获取屏幕截图，附带 Android 14+ 权限失效自动恢复机制
+ */
 function captureAndProcessScreen() {
-    let raw = captureScreen();
+    let raw = null;
+    try {
+        raw = captureScreen();
+    } catch (e) {
+        let errorMsg = e.toString();
+        // 匹配 Android 14+ 的 MediaProjection 失效报错
+        if (errorMsg.includes("MediaProjection") || errorMsg.includes("VirtualDisplay")) {
+            logErrorToScreen("⚠️ 截图Token失效(安卓14+限制)，正在尝试重新唤起...");
+            try {
+                // 1. 释放旧的、已失效的截图资源 (AutoJs6 v6.6.0+ 新增方法)
+                if (typeof images.stopScreenCapture === 'function') {
+                    images.stopScreenCapture();
+                }
+                sleep(500); // 稍微缓冲，给系统回收资源的时间
+                
+                // 2. 重新申请截图权限
+                // 注意：在安卓14上，这可能会再次弹出系统的“允许录屏”确认框
+                if (requestScreenCapture()) {
+                    logToScreen("✅ 截图权限重新申请成功，恢复监控！");
+                    raw = captureScreen(); // 重新尝试截图
+                } else {
+                    logErrorToScreen("❌ 重新申请截图权限被拒绝！监控中断。");
+                    return null;
+                }
+            } catch (re) {
+                logErrorToScreen("重新唤起截图权限失败: " + re);
+                return null;
+            }
+        } else {
+            // 其他未知报错，正常抛出或记录
+            logErrorToScreen("截图过程发生异常: " + e);
+            return null;
+        }
+    }
+
     if (!raw) return null;
 
     // 如果未开启灰度化，直接返回原图
