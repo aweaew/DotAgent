@@ -1132,7 +1132,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
             if (threads.currentThread().isInterrupted()) break;
         }
 
-        const taskName = task.name || `[${task.type}]`;
+        var taskName = task.name || `[${task.type}]`;
 
         switch (task.type) {
             case 'click': {
@@ -1576,7 +1576,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 // --- 修复 2 结束 ---
 
                 logToScreen(`[${sourceName}] 动态启动监控: ${task.sequenceName}`);
-                const sequenceToMonitor = sequences[task.sequenceName];
+                var sequenceToMonitor = sequences[task.sequenceName];
 
                 if (sequenceToMonitor && sequenceToMonitor.executionPolicy.mode === 'monitor') {
                     // (这个内部检查是多余的，因为上面的全局检查已经覆盖了，但保留它也无害)
@@ -1600,7 +1600,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
             case 'stop_monitor': {
                 logToScreen(`[${sourceName}] 正在停止监控: ${task.sequenceName}`);
 
-                const monitorThreadId = appState.activeMonitors[task.sequenceName];
+                var monitorThreadId = appState.activeMonitors[task.sequenceName];
 
                 if (monitorThreadId) {
                     // 【核心修复 1】先清理数据，再停止线程。防止线程提前终止导致状态残留。
@@ -1648,7 +1648,7 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
             }
             case 'execute_sequence': {
                 logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
-                const sequenceToRun = sequences[task.sequenceName];
+                var sequenceToRun = sequences[task.sequenceName];
                 if (sequenceToRun) {
                     executeSequence(sequenceToRun.tasks, `子序列 (${sequenceToRun.name || task.sequenceName})`, contextType, depth + 1);
                 } else {
