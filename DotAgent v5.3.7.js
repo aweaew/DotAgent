@@ -223,7 +223,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.6 升级6.7.0替换PaddleOCR为MLKit",
+    VERSION: "5.3.7 横屏失效调整",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -5109,7 +5109,7 @@ function updateCachedBoundsSafe(targetObj, newBounds) {
     // logToScreen("✅ 缓存坐标已更新");
 }
 /**
- * 【核心函数】获取屏幕截图，附带 Android 14+ 权限失效自动恢复机制 (前台唤醒版)
+ * 【核心函数】获取屏幕截图，完美适配横竖屏切换与安卓14+
  */
 function captureAndProcessScreen() {
     let raw = null;
@@ -5119,38 +5119,29 @@ function captureAndProcessScreen() {
         let errorMsg = e.toString();
         // 匹配 Android 14+ 的 MediaProjection 失效报错
         if (errorMsg.includes("MediaProjection") || errorMsg.includes("VirtualDisplay") || errorMsg.includes("ScreenCapture")) {
-            logErrorToScreen("⚠️ 截图Token失效，正在强制唤醒前台重新申请...");
+            logErrorToScreen("⚠️ 检测到屏幕旋转或Token失效，系统回收了截图权限！");
             try {
                 // 1. 释放旧的、已失效的截图资源
                 if (typeof images.stopScreenCapture === 'function') {
                     images.stopScreenCapture();
                 }
-                sleep(500);
                 
-                // 2. 核心修复：把 AutoJs6 拉回前台，否则系统会静默拦截权限弹窗！
-                app.launch(context.getPackageName());
-                
-                // 给系统 1.5 秒的时间完成界面的切换和渲染
-                sleep(1500); 
-
-                // 3. 此时应用在前台，重新申请截图权限
-                logToScreen("请在弹出的提示框中点击允许...");
-                if (requestScreenCapture()) {
-                    logToScreen("✅ 权限恢复成功！");
-                    toast("截图权限已恢复，您可以手动切回原应用了");
-                    
-                    // 重新尝试截图
-                    raw = captureScreen(); 
-                } else {
-                    logErrorToScreen("❌ 重新申请截图权限被拒绝！");
-                    return null;
+                // 2. 核心修复：坚决不使用 app.launch() 跳转回主界面！
+                // 而是优雅地调用脚本自带的停止函数，让悬浮窗恢复到“未运行”状态
+                if (typeof stopMonitoring === 'function') {
+                    // 在 UI 线程更新状态，防止线程冲突
+                    ui.run(function() {
+                        stopMonitoring("截图权限失效(屏幕旋转)");
+                        toastLog("🔄 屏幕已旋转，截图权限失效。\n请直接点击悬浮窗的 ▶️ 播放键 重新开始！");
+                    });
                 }
+                return null; // 终止本次截图尝试
+
             } catch (re) {
-                logErrorToScreen("恢复流程发生异常: " + re);
+                logErrorToScreen("资源释放异常: " + re);
                 return null;
             }
         } else {
-            // 其他未知报错，正常抛出或记录
             logErrorToScreen("截图过程发生异常: " + e);
             return null;
         }
@@ -5158,12 +5149,10 @@ function captureAndProcessScreen() {
 
     if (!raw) return null;
 
-    // 如果未开启灰度化，直接返回原图
     if (!appSettings.useGrayscale) {
         return raw;
     }
 
-    // 如果开启了灰度化，进行转换并回收原图
     try {
         let gray = images.grayscale(raw);
         raw.recycle(); 
@@ -5613,66 +5602,55 @@ function validateNumericInput(inputStr, allowFloat = false, allowSigned = false)
 // --- 在这里粘贴新函数 ---
 // =================================================================================
 /**
- * (V9 - 调试版：强制图片尺寸钳制 + 详细日志)
+ * 计算带有 Padding 的搜索区域，并动态自适应横竖屏，防止任何越界闪退
+ * @param {Object|Array} bounds - 目标的边界 {left, top, right, bottom} 或 [x, y, w, h]
+ * @param {number} padding - 外扩的像素值
+ * @returns {Array|undefined} - [x, y, width, height] 用于 OCR 或 找图的 region 参数
  */
-function calculatePaddedRegion(bounds, padding, imgW, imgH) {
-    try {
-        let x1_orig, y1_orig, x2_orig, y2_orig;
-        padding = padding || 0;
-
-        // 1. 获取限制尺寸
-        const limitW = imgW || getRealWidth();
-        const limitH = imgH || getRealHeight();
-
-        // 2. 解析原始坐标
-        if (bounds.left !== undefined && bounds.right !== undefined) {
-            x1_orig = bounds.left - padding;
-            y1_orig = bounds.top - padding;
-            x2_orig = bounds.right + padding;
-            y2_orig = bounds.bottom + padding;
-        } else if (bounds.x !== undefined && bounds.width !== undefined) {
-            x1_orig = bounds.x - padding;
-            y1_orig = bounds.y - padding;
-            x2_orig = bounds.x + bounds.width + padding;
-            y2_orig = bounds.y + bounds.height + padding;
-        } else if (Array.isArray(bounds) && bounds.length === 4) {
-            x1_orig = bounds[0] - padding;
-            y1_orig = bounds[1] - padding;
-            x2_orig = bounds[2] + padding;
-            y2_orig = bounds[3] + padding;
-        } else {
-            return [0, 0, 10, 10];
-        }
-
-        // --- 🔴 调试日志 A：输出原始输入 ---
-        // 只在坐标异常大时打印，避免刷屏
-        if (x1_orig > limitW - 100 || x2_orig > limitW) {
-            logToScreen(`[⚠️调试-计算前] 原始: x1=${x1_orig}, x2=${x2_orig} | 限制宽: ${limitW} (来源: ${imgW ? "截图" : "屏幕"})`);
-        }
-
-        // 3. 强制钳制 (关键修复逻辑)
-        // 确保 x1 最大只能是 limitW - 1 (例如 1079)
-        let final_x1 = Math.max(0, Math.min(x1_orig, limitW - 1));
-        // 确保 x2 最大只能是 limitW (例如 1080)
-        let final_x2 = Math.max(final_x1 + 1, Math.min(x2_orig, limitW));
-
-        let final_y1 = Math.max(0, Math.min(y1_orig, limitH - 1));
-        let final_y2 = Math.max(final_y1 + 1, Math.min(y2_orig, limitH));
-
-        let w = final_x2 - final_x1;
-        let h = final_y2 - final_y1;
-
-        // --- 🔴 调试日志 B：输出修正结果 ---
-        if (x1_orig > limitW - 100 || final_x1 + w > limitW) {
-            logToScreen(`[✅调试-计算后] 修正: x=${final_x1}, w=${w}, end=${final_x1 + w} | 安全? ${(final_x1 + w <= limitW)}`);
-        }
-
-        return [final_x1, final_y1, w, h];
-
-    } catch (e) {
-        logErrorToScreen("[RegionCalc Error] " + e);
-        return [0, 0, 10, 10];
+function calculatePaddedRegion(bounds, padding) {
+    if (!bounds) return undefined;
+    
+    // 1. 动态获取当前真实的屏幕宽高（完美适配横竖屏即时切换）
+    let metrics = context.getResources().getDisplayMetrics();
+    let currentScreenWidth = metrics.widthPixels;
+    let currentScreenHeight = metrics.heightPixels;
+    
+    // 2. 兼容不同的 bounds 格式传入
+    let left, top, right, bottom;
+    if (bounds.left !== undefined) {
+        left = bounds.left;
+        top = bounds.top;
+        right = bounds.right;
+        bottom = bounds.bottom;
+    } else if (bounds.length === 4) {
+        // 假设数组是 [x, y, width, height] 格式
+        left = bounds[0];
+        top = bounds[1];
+        right = bounds[0] + bounds[2];
+        bottom = bounds[1] + bounds[3];
+    } else {
+        return undefined;
     }
+    
+    let p = padding || 0;
+    
+    // 3. 计算外扩坐标，并使用当前屏幕宽高进行强制钳制 (Clamp)
+    let x1 = Math.max(0, left - p);
+    let y1 = Math.max(0, top - p);
+    let x2 = Math.min(currentScreenWidth, right + p);
+    let y2 = Math.min(currentScreenHeight, bottom + p);
+    
+    let w = x2 - x1;
+    let h = y2 - y1;
+    
+    // 4. 极端越界保护：如果目标区域已经完全飞出当前屏幕，或者宽高异常
+    if (x1 >= currentScreenWidth || y1 >= currentScreenHeight || w <= 0 || h <= 0) {
+        // 返回 undefined，让 OCR/找图 回退到全屏安全搜索，而不是抛出越界异常
+        return undefined; 
+    }
+    
+    // 5. 返回 AutoJs6 要求的 [x, y, width, height] 格式，且必须是整数(Math.floor)
+    return [Math.floor(x1), Math.floor(y1), Math.floor(w), Math.floor(h)];
 }
 // =================================================================================
 // --- 在这里粘贴新函数 ---
