@@ -5109,7 +5109,7 @@ function updateCachedBoundsSafe(targetObj, newBounds) {
     // logToScreen("✅ 缓存坐标已更新");
 }
 /**
- * 【核心函数】获取屏幕截图，附带 Android 14+ 权限失效自动恢复机制
+ * 【核心函数】获取屏幕截图，附带 Android 14+ 权限失效自动恢复机制 (前台唤醒版)
  */
 function captureAndProcessScreen() {
     let raw = null;
@@ -5118,26 +5118,35 @@ function captureAndProcessScreen() {
     } catch (e) {
         let errorMsg = e.toString();
         // 匹配 Android 14+ 的 MediaProjection 失效报错
-        if (errorMsg.includes("MediaProjection") || errorMsg.includes("VirtualDisplay")) {
-            logErrorToScreen("⚠️ 截图Token失效(安卓14+限制)，正在尝试重新唤起...");
+        if (errorMsg.includes("MediaProjection") || errorMsg.includes("VirtualDisplay") || errorMsg.includes("ScreenCapture")) {
+            logErrorToScreen("⚠️ 截图Token失效，正在强制唤醒前台重新申请...");
             try {
-                // 1. 释放旧的、已失效的截图资源 (AutoJs6 v6.6.0+ 新增方法)
+                // 1. 释放旧的、已失效的截图资源
                 if (typeof images.stopScreenCapture === 'function') {
                     images.stopScreenCapture();
                 }
-                sleep(500); // 稍微缓冲，给系统回收资源的时间
+                sleep(500);
                 
-                // 2. 重新申请截图权限
-                // 注意：在安卓14上，这可能会再次弹出系统的“允许录屏”确认框
+                // 2. 核心修复：把 AutoJs6 拉回前台，否则系统会静默拦截权限弹窗！
+                app.launch(context.getPackageName());
+                
+                // 给系统 1.5 秒的时间完成界面的切换和渲染
+                sleep(1500); 
+
+                // 3. 此时应用在前台，重新申请截图权限
+                logToScreen("请在弹出的提示框中点击允许...");
                 if (requestScreenCapture()) {
-                    logToScreen("✅ 截图权限重新申请成功，恢复监控！");
-                    raw = captureScreen(); // 重新尝试截图
+                    logToScreen("✅ 权限恢复成功！");
+                    toast("截图权限已恢复，您可以手动切回原应用了");
+                    
+                    // 重新尝试截图
+                    raw = captureScreen(); 
                 } else {
-                    logErrorToScreen("❌ 重新申请截图权限被拒绝！监控中断。");
+                    logErrorToScreen("❌ 重新申请截图权限被拒绝！");
                     return null;
                 }
             } catch (re) {
-                logErrorToScreen("重新唤起截图权限失败: " + re);
+                logErrorToScreen("恢复流程发生异常: " + re);
                 return null;
             }
         } else {
@@ -5157,10 +5166,9 @@ function captureAndProcessScreen() {
     // 如果开启了灰度化，进行转换并回收原图
     try {
         let gray = images.grayscale(raw);
-        raw.recycle(); // 立即回收彩色原图，防止内存泄漏
+        raw.recycle(); 
         return gray;
     } catch (e) {
-        // 如果灰度化失败（极少见），返回原图作为降级方案
         logErrorToScreen("灰度化失败: " + e);
         return raw;
     }
