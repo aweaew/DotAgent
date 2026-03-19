@@ -223,7 +223,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.7 横屏失效调整",
+    VERSION: "5.3.8 添加遮罩设定功能",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -317,7 +317,42 @@ let appState = {
         // --- 添加结束 ---
     }
 };
+// 在 appState 中增加一个遮罩容器
+appState.masks = [];
 
+/**
+ * 在指定坐标生成一个不透明的黑色遮罩
+ */
+function createVisualMask(x, y, width, height) {
+    ui.run(function() {
+        // 使用 rawWindow 创建，bg="#FF000000" 代表纯黑色，你可以改成其他颜色
+        let maskWindow = floaty.rawWindow(
+            <frame bg="#FF000000" /> 
+        );
+        maskWindow.setSize(width, height);
+        maskWindow.setPosition(x, y-statusBarHeight);
+        // 【极其关键】设置为 false，表示它只是个视觉贴纸，点击会穿透它点到后面的游戏/应用
+        maskWindow.setTouchable(false); 
+        
+        appState.masks.push(maskWindow);
+        log(`已在坐标 (${x}, ${y}) 处贴上物理遮罩`);
+    });
+}
+
+/**
+ * 撕掉所有贴上去的遮罩
+ */
+function clearAllMasks() {
+    ui.run(function() {
+        if (appState.masks && appState.masks.length > 0) {
+            appState.masks.forEach(w => {
+                try { w.close(); } catch (e) {}
+            });
+            appState.masks = [];
+            log("已清理所有视觉遮罩");
+        }
+    });
+}
 let uiRefs = {
     mainView: null,
     targetView: null,
@@ -999,6 +1034,21 @@ function handleOcrSuccess(ocrResult, successAction) {
             safePress(clickX, clickY, CONSTANTS.UI.CLICK_PRESS_DURATION_MS);
             sleep(appSettings.clickDelayMs);
             break;
+        case 'mask': {
+            clearAllMasks(); // <--- 新增：添加新遮罩前，先撕掉旧的
+            const expandOcr = successAction.maskExpand || 10;
+            let b = ocrResult.bounds;
+            createVisualMask(
+                Math.max(0, b.left - expandOcr),
+                Math.max(0, b.top - expandOcr),
+                b.width() + expandOcr * 2,
+                b.height() + expandOcr * 2
+            );
+            let recognizedText = ocrResult.label || ocrResult.text || "未知文本";
+            logToScreen(`对 "${recognizedText}" 贴上物理遮罩`);
+            sleep(200);
+            break;
+        }
         case 'back':
             logToScreen(`识别成功，执行返回操作`);
             back();
@@ -1020,6 +1070,21 @@ function handleImageSuccess(location, successAction) {
             safePress(clickX, clickY, CONSTANTS.UI.CLICK_PRESS_DURATION_MS);
             sleep(appSettings.clickDelayMs);
             break;
+        case 'mask': {
+            clearAllMasks(); // <--- 新增：添加新遮罩前，先撕掉旧的
+            const expandImg = successAction.maskExpand || 10;
+            const mw = location.right - location.left;
+            const mh = location.bottom - location.top;
+            createVisualMask(
+                Math.max(0, location.left - expandImg),
+                Math.max(0, location.top - expandImg),
+                mw + expandImg * 2,
+                mh + expandImg * 2
+            );
+            logToScreen(`对找到的图片贴上物理遮罩`);
+            sleep(200);
+            break;
+        }
         case 'back':
             logToScreen(`图片识别成功，执行返回操作`);
             back();
@@ -1666,6 +1731,12 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 }
                 break;
             }
+            // 在原有的 case 'timer': { ... } 后面插入：
+            case 'clear_masks': {
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: 清理所有物理遮罩`);
+                clearAllMasks();
+                break;
+            }
             default: {
                 logErrorToScreen(`[${sourceName}] 警告: 发现未知任务类型 "${task.type}"，已跳过。`);
                 break;
@@ -1807,6 +1878,18 @@ function executeTriggerAction(trigger, location) {
             } else {
                 logErrorToScreen(`...错误: 启动应用动作未定义 appName 参数`);
             }
+            break;
+        }
+        case 'mask': {
+            clearAllMasks(); // <--- 新增：添加新遮罩前，先撕掉旧的
+            const expand = action.maskExpand || 10; // 默认向外扩10像素，彻底遮死边缘
+            const mx = Math.max(0, location.x - expand);
+            const my = Math.max(0, location.y - expand);
+            const mw = location.width + expand * 2;
+            const mh = location.height + expand * 2;
+            createVisualMask(mx, my, mw, mh);
+            logToScreen(`...对 "${targetName}" 贴上物理遮罩`);
+            sleep(200); // 稍微缓冲让UI渲染黑块
             break;
         }
         case 'skip':
@@ -2142,6 +2225,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
             }
             sleep(interval);
         }
+        clearAllMasks(); // <--- 新增：监控线程因任何原因(主动停止/异常)彻底结束前，撕掉残留的遮罩
     });
 
     appState.threads[monitorThreadId] = monitorThread;
@@ -2188,7 +2272,7 @@ function toggleMonitoring() {
 
 function stopMonitoring(message) {
     if (!appState.isMonitoring && Object.keys(appState.activeMonitors).length === 0) return;
-
+    clearAllMasks(); // <--- 新增：点击悬浮窗 🛑 停止所有监控时，清理所有遮罩
     appState.isMonitoring = false;
     appState.timers = {}; // Clear all timers on global monitor stop
 
@@ -4221,7 +4305,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
             <text>冷却 (ms):</text><input id="cooldownMs" inputType="number" />
             
             <text text="触发后动作 (onSuccess)" marginTop="10" textStyle="bold" textColor="{{CONSTANTS.UI.THEME.ACCENT_GRADIENT_START}}"/>
-            <text>类型:</text><spinner id="actionType" entries="点击目标|执行返回|跳过(无操作)|滑动|启动App" />
+            <text>类型:</text><spinner id="actionType" entries="点击目标|执行返回|跳过(无操作)|滑动|启动App|贴上遮罩" />
             <text>延迟 (ms):</text><input id="actionDelayMs" inputType="number" />
             <vertical id="click_offset_fields" visibility="gone">
                 <horizontal><text>OffX:</text><input id="click_offsetX" inputType="numberSigned" layout_weight="1"/><text>OffY:</text><input id="click_offsetY" inputType="numberSigned" layout_weight="1"/></horizontal>
@@ -4309,7 +4393,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     }
 
     // --- 动作 UI 填充 (Success) ---
-    const actionMap = { 'click': 0, 'back': 1, 'skip': 2, 'swipe': 3, 'launch_app': 4 };
+    const actionMap = { 'click': 0, 'back': 1, 'skip': 2, 'swipe': 3, 'launch_app': 4, 'mask': 5 };
     view.actionType.setSelection(actionMap[currentTrigger.action.type] || 0);
     view.actionDelayMs.setText(String(currentTrigger.action.delayMs || 0));
 
@@ -4382,7 +4466,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
 
         let currentTypeStr = "";
         if (!isFail) {
-            let sTypes = ['click', 'back', 'skip', 'swipe', 'launch_app'];
+            let sTypes = ['click', 'back', 'skip', 'swipe', 'launch_app', 'mask'];
             currentTypeStr = sTypes[typeIndex];
         } else {
             let fTypes = ['skip', 'back', 'launch_app', 'execute_sequence'];
@@ -5602,55 +5686,66 @@ function validateNumericInput(inputStr, allowFloat = false, allowSigned = false)
 // --- 在这里粘贴新函数 ---
 // =================================================================================
 /**
- * 计算带有 Padding 的搜索区域，并动态自适应横竖屏，防止任何越界闪退
- * @param {Object|Array} bounds - 目标的边界 {left, top, right, bottom} 或 [x, y, w, h]
- * @param {number} padding - 外扩的像素值
- * @returns {Array|undefined} - [x, y, width, height] 用于 OCR 或 找图的 region 参数
+ * (V9 - 调试版：强制图片尺寸钳制 + 详细日志)
  */
-function calculatePaddedRegion(bounds, padding) {
-    if (!bounds) return undefined;
-    
-    // 1. 动态获取当前真实的屏幕宽高（完美适配横竖屏即时切换）
-    let metrics = context.getResources().getDisplayMetrics();
-    let currentScreenWidth = metrics.widthPixels;
-    let currentScreenHeight = metrics.heightPixels;
-    
-    // 2. 兼容不同的 bounds 格式传入
-    let left, top, right, bottom;
-    if (bounds.left !== undefined) {
-        left = bounds.left;
-        top = bounds.top;
-        right = bounds.right;
-        bottom = bounds.bottom;
-    } else if (bounds.length === 4) {
-        // 假设数组是 [x, y, width, height] 格式
-        left = bounds[0];
-        top = bounds[1];
-        right = bounds[0] + bounds[2];
-        bottom = bounds[1] + bounds[3];
-    } else {
-        return undefined;
+function calculatePaddedRegion(bounds, padding, imgW, imgH) {
+    try {
+        let x1_orig, y1_orig, x2_orig, y2_orig;
+        padding = padding || 0;
+
+        // 1. 获取限制尺寸
+        const limitW = imgW || getRealWidth();
+        const limitH = imgH || getRealHeight();
+
+        // 2. 解析原始坐标
+        if (bounds.left !== undefined && bounds.right !== undefined) {
+            x1_orig = bounds.left - padding;
+            y1_orig = bounds.top - padding;
+            x2_orig = bounds.right + padding;
+            y2_orig = bounds.bottom + padding;
+        } else if (bounds.x !== undefined && bounds.width !== undefined) {
+            x1_orig = bounds.x - padding;
+            y1_orig = bounds.y - padding;
+            x2_orig = bounds.x + bounds.width + padding;
+            y2_orig = bounds.y + bounds.height + padding;
+        } else if (Array.isArray(bounds) && bounds.length === 4) {
+            x1_orig = bounds[0] - padding;
+            y1_orig = bounds[1] - padding;
+            x2_orig = bounds[2] + padding;
+            y2_orig = bounds[3] + padding;
+        } else {
+            return [0, 0, 10, 10];
+        }
+
+        // --- 🔴 调试日志 A：输出原始输入 ---
+        // 只在坐标异常大时打印，避免刷屏
+        if (x1_orig > limitW - 100 || x2_orig > limitW) {
+            logToScreen(`[⚠️调试-计算前] 原始: x1=${x1_orig}, x2=${x2_orig} | 限制宽: ${limitW} (来源: ${imgW ? "截图" : "屏幕"})`);
+        }
+
+        // 3. 强制钳制 (关键修复逻辑)
+        // 确保 x1 最大只能是 limitW - 1 (例如 1079)
+        let final_x1 = Math.max(0, Math.min(x1_orig, limitW - 1));
+        // 确保 x2 最大只能是 limitW (例如 1080)
+        let final_x2 = Math.max(final_x1 + 1, Math.min(x2_orig, limitW));
+
+        let final_y1 = Math.max(0, Math.min(y1_orig, limitH - 1));
+        let final_y2 = Math.max(final_y1 + 1, Math.min(y2_orig, limitH));
+
+        let w = final_x2 - final_x1;
+        let h = final_y2 - final_y1;
+
+        // --- 🔴 调试日志 B：输出修正结果 ---
+        if (x1_orig > limitW - 100 || final_x1 + w > limitW) {
+            logToScreen(`[✅调试-计算后] 修正: x=${final_x1}, w=${w}, end=${final_x1 + w} | 安全? ${(final_x1 + w <= limitW)}`);
+        }
+
+        return [final_x1, final_y1, w, h];
+
+    } catch (e) {
+        logErrorToScreen("[RegionCalc Error] " + e);
+        return [0, 0, 10, 10];
     }
-    
-    let p = padding || 0;
-    
-    // 3. 计算外扩坐标，并使用当前屏幕宽高进行强制钳制 (Clamp)
-    let x1 = Math.max(0, left - p);
-    let y1 = Math.max(0, top - p);
-    let x2 = Math.min(currentScreenWidth, right + p);
-    let y2 = Math.min(currentScreenHeight, bottom + p);
-    
-    let w = x2 - x1;
-    let h = y2 - y1;
-    
-    // 4. 极端越界保护：如果目标区域已经完全飞出当前屏幕，或者宽高异常
-    if (x1 >= currentScreenWidth || y1 >= currentScreenHeight || w <= 0 || h <= 0) {
-        // 返回 undefined，让 OCR/找图 回退到全屏安全搜索，而不是抛出越界异常
-        return undefined; 
-    }
-    
-    // 5. 返回 AutoJs6 要求的 [x, y, width, height] 格式，且必须是整数(Math.floor)
-    return [Math.floor(x1), Math.floor(y1), Math.floor(w), Math.floor(h)];
 }
 // =================================================================================
 // --- 在这里粘贴新函数 ---
@@ -6223,6 +6318,7 @@ function importConfiguration() {
 // =================================================================================
 function closeAllAndExit() {
     cleanupTempCropFile(); // <-- 【V3 修复】在这里添加清理
+    clearAllMasks(); // <--- 新增：脚本停止时撕掉所有遮罩
     stopExecution("应用退出，停止所有任务");
     stopMonitoring("应用退出，停止所有监控");
     // --- 在这里添加新行 ---
