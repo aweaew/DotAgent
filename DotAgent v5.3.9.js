@@ -223,7 +223,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.8 添加遮罩设定功能",
+    VERSION: "5.3.9 图片查找内存优化",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -1994,6 +1994,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
         let __triggersSig = __stableHash(sequence.triggers || []);
         const interval = sequence.executionPolicy.interval || 1000;
         let triggerCooldowns = {};
+        let threadImageCache = {}; // <--- 新增：监控线程专用的图片内存缓存
 
         // --- 2. 主循环 ---
         while (!threads.currentThread().isInterrupted()) {
@@ -2065,44 +2066,52 @@ function runSingleMonitorThread(sequence, sequenceKey) {
 
                         // --- 识别逻辑 ---
                         if (trigger.type === 'image') {
-                            let template = null;
+                            let template = threadImageCache[trigger.target]; // 先从缓存拿
+                            
                             try {
-                                let imagePath = files.join(CONSTANTS.FILES.IMAGE_DIR, trigger.target);
-                                if (files.exists(imagePath)) {
-                                    template = images.read(imagePath);
-                                    if (template) {
-                                        if (appSettings.useGrayscale) {
-                                            try {
-                                                let grayTemp = images.grayscale(template);
-                                                template.recycle();
-                                                template = grayTemp;
-                                            } catch (e) { }
-                                        }
-
-                                        let p = null;
-                                        // 缓存搜索 (带 region)
-                                        if (trigger.cachedBounds) {
-                                            let b = trigger.cachedBounds;
-                                            let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
-                                            let region = calculatePaddedRegion(b, padding, imgW, imgH);
-                                            p = images.findImage(capturedImage, template, { region: region, threshold: trigger.threshold || 0.8 });
-                                        }
-                                        // 全屏/SearchArea
-                                        if (!p) {
-                                            let findOptions = { threshold: trigger.threshold || 0.8 };
-                                            if (trigger.search_area && trigger.search_area.length === 4) {
-                                                findOptions.region = calculatePaddedRegion(trigger.search_area, 0, imgW, imgH);
+                                if (!template) { // 如果缓存没有，才去硬盘读
+                                    let imagePath = files.join(CONSTANTS.FILES.IMAGE_DIR, trigger.target);
+                                    if (files.exists(imagePath)) {
+                                        let rawTemp = images.read(imagePath);
+                                        if (rawTemp) {
+                                            if (appSettings.useGrayscale) {
+                                                try {
+                                                    template = images.grayscale(rawTemp);
+                                                    rawTemp.recycle();
+                                                } catch (e) { template = rawTemp; }
+                                            } else {
+                                                template = rawTemp;
                                             }
-                                            p = images.findImage(capturedImage, template, findOptions);
-                                            if (p) {
-                                                updateCachedBoundsSafe(trigger, { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() });
-                                            }
+                                            // 存入缓存，下次循环直接秒用！
+                                            threadImageCache[trigger.target] = template; 
                                         }
-                                        if (p) foundLocation = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
                                     }
                                 }
+
+                                if (template) {
+                                    let p = null;
+                                    // 缓存搜索 (带 region)
+                                    if (trigger.cachedBounds) {
+                                        let b = trigger.cachedBounds;
+                                        let padding = (trigger.cachePadding !== undefined) ? trigger.cachePadding : (appSettings.defaultCachePadding || 50);
+                                        let region = calculatePaddedRegion(b, padding, imgW, imgH);
+                                        p = images.findImage(capturedImage, template, { region: region, threshold: trigger.threshold || 0.8 });
+                                    }
+                                    // 全屏/SearchArea
+                                    if (!p) {
+                                        let findOptions = { threshold: trigger.threshold || 0.8 };
+                                        if (trigger.search_area && trigger.search_area.length === 4) {
+                                            findOptions.region = calculatePaddedRegion(trigger.search_area, 0, imgW, imgH);
+                                        }
+                                        p = images.findImage(capturedImage, template, findOptions);
+                                        if (p) {
+                                            updateCachedBoundsSafe(trigger, { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() });
+                                        }
+                                    }
+                                    if (p) foundLocation = { x: p.x, y: p.y, width: template.getWidth(), height: template.getHeight() };
+                                }
                             } finally {
-                                if (template) template.recycle();
+                                // ❌ 千万不要在这里写 template.recycle() 了！我们要复用它！
                             }
                         }
                         else if (trigger.type === 'ocr') {
@@ -2226,6 +2235,11 @@ function runSingleMonitorThread(sequence, sequenceKey) {
             sleep(interval);
         }
         clearAllMasks(); // <--- 新增：监控线程因任何原因(主动停止/异常)彻底结束前，撕掉残留的遮罩
+        // <--- 新增：线程彻底结束前，一次性释放所有常驻内存的图片，避免内存泄漏
+        for (let key in threadImageCache) {
+            try { if (threadImageCache[key]) threadImageCache[key].recycle(); } catch(e){}
+        }
+        threadImageCache = {};
     });
 
     appState.threads[monitorThreadId] = monitorThread;
