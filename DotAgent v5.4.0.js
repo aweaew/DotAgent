@@ -160,6 +160,9 @@ function ensurePriorityQueue(sequence) {
 function bumpTriggerPriority(sequence, trigger) {
     try {
         if (!sequence) return;
+        // ---- 核心修复 1：时间类触发器是静态的，绝不参与动态优先级升降 ----
+        if (trigger.type === 'time' || trigger.type === 'timer_end') return;
+        // -----------------------------------------------------------
         if (!sequence.priorityQueue || !Array.isArray(sequence.priorityQueue)) sequence.priorityQueue = [];
         const pq = sequence.priorityQueue;
         const id = getTriggerId(trigger);
@@ -198,13 +201,21 @@ function reorderByPriority(sequence, triggers) {
                 return { t, idx, pos };
             })
             .sort((a, b) => {
-                // 1. 置顶优先
+                // ---- 核心修复 2：时间类触发器拥有“凌驾于一切之上”的绝对特权 ----
+                const aIsTime = (a.t.type === 'time' || a.t.type === 'timer_end');
+                const bIsTime = (b.t.type === 'time' || b.t.type === 'timer_end');
+                if (aIsTime !== bIsTime) return aIsTime ? -1 : 1;
+                // -------------------------------------------------------------
+
+                // 1. 用户手动勾选的置顶优先 (🔥)
                 const aTop = a.t.isTopPriority === true;
                 const bTop = b.t.isTopPriority === true;
                 if (aTop !== bTop) return aTop ? -1 : 1;
-                // 2. PQ 排序
+                
+                // 2. PQ 动态命中排序
                 if (a.pos !== b.pos) return a.pos - b.pos;
-                // 3. 默认排序
+                
+                // 3. 默认创建顺序
                 return a.idx - b.idx;
             })
             .map(x => x.t);
@@ -223,7 +234,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.3.9 图片查找内存优化",
+    VERSION: "5.4.0 加入定时器",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -1247,6 +1258,42 @@ function executeSequence(tasksToRun, sourceName, contextType, depth) {
                 }
                 break;
             }
+            // 在 case 'wait': { ... } 的下方插入：
+            case 'wait_time': {
+                logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
+                toast(`执行: ${taskName}`);
+
+                let targetTimeStr = task.targetTime || "00:00:00";
+                let parts = targetTimeStr.split(':');
+                let th = parseInt(parts[0]) || 0;
+                let tm = parseInt(parts[1]) || 0;
+                let ts = parseInt(parts[2]) || 0;
+
+                while (!getStopSignal(contextType) && !threads.currentThread().isInterrupted()) {
+                    let now = new Date();
+                    let targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), th, tm, ts, 0);
+
+                    // 如果当前时间已经达到了目标时间
+                    if (now.getTime() >= targetDate.getTime()) {
+                        // 如果超出时间在5秒以内，认为是刚好踩点，直接跳出循环继续执行
+                        if (now.getTime() - targetDate.getTime() <= 5000) {
+                            break;
+                        } else {
+                            // 如果错过太久，说明目标时间是明天的这个时刻
+                            targetDate.setDate(targetDate.getDate() + 1);
+                        }
+                    }
+
+                    // 计算剩余倒计时并显示在悬浮窗上
+                    let diff = targetDate.getTime() - now.getTime();
+                    appState.currentWaitTask = { remaining: diff, total: diff };
+
+                    if (diff <= 0) break;
+                    sleep(1000); // 每秒检查一次
+                }
+                appState.currentWaitTask = null; // 清除倒计时状态
+                break;
+            }
             case 'swipe': {
                 logToScreen(`[${sourceName}] 执行任务 ${i + 1}: ${taskName}`);
                 toast(`执行: ${taskName}`);
@@ -2195,6 +2242,30 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                 delete appState.timers[timerName];
                             }
                         }
+                        else if (trigger.type === 'time') {
+                            // 定时触发器逻辑
+                            let targetTimeStr = trigger.target || "00:00:00";
+                            let parts = targetTimeStr.split(':');
+                            let th = parseInt(parts[0]) || 0;
+                            let tm = parseInt(parts[1]) || 0;
+                            let ts = parseInt(parts[2]) || 0;
+
+                            let now = new Date();
+                            let todayStr = now.getFullYear() + "-" + now.getMonth() + "-" + now.getDate();
+                            let targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), th, tm, ts, 0);
+
+                            // 如果时间到了，且今天还没触发过
+                            if (now.getTime() >= targetDate.getTime() && trigger._lastFiredDate !== todayStr) {
+                                // 容错处理: 避免下午刚启动脚本就把早上的定时任务触发了。
+                                // 限制只有在设定时间之后 1 小时内才算有效触发。
+                                if (now.getTime() - targetDate.getTime() <= 60 * 60 * 1000) {
+                                    foundLocation = { x: 0, y: 0, width: 0, height: 0 }; // 假坐标以触发后续操作
+                                    trigger._lastFiredDate = todayStr;
+                                } else {
+                                    trigger._lastFiredDate = todayStr; // 超时太久，标记今天已过期，等明天
+                                }
+                            }
+                        }
 
                         // --- 结果处理 ---
                         if (foundLocation) {
@@ -2746,6 +2817,7 @@ function showAddTaskToMainDialog() {
         "[点击] 任务",
         "[滑动] 任务",
         "[等待] 任务",
+        "[等待] 至指定时间",
         "[等待消失] 任务",
         "[计时器] 任务",
         "[识别] 文本任务",
@@ -2761,6 +2833,7 @@ function showAddTaskToMainDialog() {
         (cb) => addClickTask(mainSequence, cb),
         (cb) => addSwipeTask(mainSequence, cb),
         (cb) => addWaitTask(mainSequence, cb),
+        (cb) => addWaitTimeTask(mainSequence, cb),
         (cb) => addWaitForDissapearTask(mainSequence, cb),
         (cb) => addTimerTask(mainSequence, cb),
         (cb) => addOcrTask(mainSequence, cb),
@@ -2803,6 +2876,7 @@ function showAddTaskDialog(targetSequence, targetSequenceKey, onComplete) {
         "[点击] 任务",
         "[滑动] 任务",
         "[等待] 任务",
+        "[等待] 至指定时间",
         "[等待消失] 任务",
         "[计时器] 任务",
         "[识别] 文本任务",
@@ -2821,6 +2895,7 @@ function showAddTaskDialog(targetSequence, targetSequenceKey, onComplete) {
             (cb) => addClickTask(targetSequence, cb),
             (cb) => addSwipeTask(targetSequence, cb),
             (cb) => addWaitTask(targetSequence, cb),
+            (cb) => addWaitTimeTask(targetSequence, cb),
             (cb) => addWaitForDissapearTask(targetSequence, cb),
             (cb) => addTimerTask(targetSequence, cb),
             (cb) => addOcrTask(targetSequence, cb),
@@ -2910,6 +2985,15 @@ function addWaitTask(targetSequence, onComplete) {
             addNewTask(task, targetSequence);
         } else {
             toast("输入无效");
+        }
+        if (onComplete) onComplete();
+    });
+}
+function addWaitTimeTask(targetSequence, onComplete) {
+    dialogs.rawInput("请输入目标时间 (格式 HH:mm:ss，如 08:30:00)", "08:30:00").then(timeStr => {
+        if (timeStr) {
+            let task = { type: 'wait_time', name: `等待至: ${timeStr}`, targetTime: timeStr };
+            addNewTask(task, targetSequence);
         }
         if (onComplete) onComplete();
     });
@@ -4281,7 +4365,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
             </horizontal>
 
             <text>触发类型:</text>
-            <spinner id="type" entries="图像|文本(OCR)|计时器结束" />
+            <spinner id="type" entries="图像|文本(OCR)|计时器结束|到达指定时间" />
             <text id="target_label">目标:</text>
             <horizontal>
                 <input id="target" layout_weight="1" />
@@ -4360,22 +4444,23 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
 
     if (isNew) view.order_row.setVisibility(0); // 显示序号行
 
-    const typeMap = { 'image': 0, 'ocr': 1, 'timer_end': 2 };
+    const typeMap = { 'image': 0, 'ocr': 1, 'timer_end': 2, 'time': 3 };
     view.type.setSelection(typeMap[currentTrigger.type] || 0);
 
     function updateTriggerFields(position) {
         const isImage = position === 0;
         const isOcr = position === 1;
         const isTimer = position === 2;
+        const isTime = position === 3;
         view.image_options.setVisibility(isImage ? 0 : 8);
         view.browse_trigger_image.setVisibility(isImage ? 0 : 8);
         view.ocr_options.setVisibility(isOcr ? 0 : 8);
-        view.search_area_label.setVisibility(isTimer ? 8 : 0);
-        view.sa_x1.setVisibility(isTimer ? 8 : 0); view.sa_y1.setVisibility(isTimer ? 8 : 0);
-        view.sa_x2.setVisibility(isTimer ? 8 : 0); view.sa_y2.setVisibility(isTimer ? 8 : 0);
-        view.cache_padding_input.setVisibility(isTimer ? 8 : 0);
-        view.cache_padding_label.setVisibility(isTimer ? 8 : 0);
-        view.target_label.setText(isTimer ? "目标 (计时器名称):" : "目标:");
+        view.search_area_label.setVisibility(isTimer|| isTime ? 8 : 0);
+        view.sa_x1.setVisibility(isTimer || isTime ? 8 : 0); view.sa_y1.setVisibility(isTimer || isTime ? 8 : 0);
+        view.sa_x2.setVisibility(isTimer || isTime ? 8 : 0); view.sa_y2.setVisibility(isTimer || isTime ? 8 : 0);
+        view.cache_padding_input.setVisibility(isTimer || isTime ? 8 : 0);
+        view.cache_padding_label.setVisibility(isTimer || isTime ? 8 : 0);
+        view.target_label.setText(isTimer ? "目标 (计时器名称):" : (isTime ? "目标时间 (HH:mm:ss):" : "目标:"));
     }
     updateTriggerFields(typeMap[currentTrigger.type] || 0);
     view.type.setOnItemSelectedListener({ onItemSelected: (p, v, pos, id) => updateTriggerFields(pos) });
@@ -4545,7 +4630,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
 
         let newTriggerData = {};
 
-        const typeKeys = ['image', 'ocr', 'timer_end'];
+        const typeKeys = ['image', 'ocr', 'timer_end', 'time'];
         newTriggerData.type = typeKeys[view.type.getSelectedItemPosition()];
         newTriggerData.target = view.target.getText().toString();
         newTriggerData.threshold = parseFloat(view.threshold.getText().toString()) || 0.8;
@@ -4630,6 +4715,10 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
                 <text>等待时间 (ms):</text><input id="wait_duration" inputType="number" />
             </vertical>
             
+            <vertical id="wait_time_fields" visibility="gone">
+                <text>目标时间 (HH:mm:ss):</text><input id="wait_targetTime" />
+            </vertical>
+
             <vertical id="timer_fields" visibility="gone">
                 <text>计时器名称:</text><input id="timer_name" />
                 <text>时长 (ms):</text><input id="timer_duration" inputType="number" />
@@ -4775,11 +4864,13 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
         fieldsToShow.push('cache_padding_fields');
         view.cache_padding_input.setText(String(task.cachePadding !== undefined ? task.cachePadding : (appSettings.defaultCachePadding || 50)));
     }
+    if (task.type === 'wait_time') fieldsToShow.push('wait_time_fields');
     fieldsToShow.forEach(id => { if (view[id]) view[id].setVisibility(0) });
 
     // 2. 根据任务类型加载特定数据
     switch (task.type) {
         case 'wait': view.wait_duration.setText(String(task.duration || 1000)); break;
+        case 'wait_time': view.wait_targetTime.setText(task.targetTime || "08:30:00"); break;
         case 'timer': view.timer_name.setText(task.timerName || ''); view.timer_duration.setText(String(task.duration || 10000)); break;
         case 'click':
             view.click_x.setText(String(task.x || 0)); view.click_y.setText(String(task.y || 0));
@@ -5016,6 +5107,7 @@ function showTaskEditor(task, taskList, sequenceKey, onSaveCallback) {
             // 具体任务保存
             switch (task.type) {
                 case 'wait': task.duration = parseInt(view.wait_duration.getText().toString()) || 1000; break;
+                case 'wait_time': task.targetTime = view.wait_targetTime.getText().toString(); break;
                 case 'timer': task.timerName = view.timer_name.getText().toString(); task.duration = parseInt(view.timer_duration.getText().toString()) || 10000; break;
                 case 'click':
                     task.x = parseFloat(view.click_x.getText().toString()) || 0; task.y = parseFloat(view.click_y.getText().toString()) || 0;
