@@ -2562,8 +2562,9 @@ function createControlPanel() {
             let statusStr = "";
 
             // 优先级 1: 倒计时 (忙碌)
-            if (appState.currentWaitTask && appState.currentWaitTask.remaining > 0) {
-                let remainingSeconds = Math.round(appState.currentWaitTask.remaining / 1000);
+            let currentWait = appState.currentWaitTask; // 先将引用提取到局部变量
+            if (currentWait && currentWait.remaining > 0) {
+                let remainingSeconds = Math.round(currentWait.remaining / 1000);
                 statusStr = `⏳ 等待: ${remainingSeconds}s`;
             }
             // 优先级 2: 序列运行中 (忙碌)
@@ -6211,24 +6212,23 @@ function showProfileManager() {
     }
 
     // 绑定修复按钮点击事件
+    // 绑定修复按钮点击事件
     dialogView.repairPermBtn.click(() => {
         // 防止重复点击
         dialogView.repairPermBtn.setEnabled(false);
-        dialogView.repairPermBtn.setText("正在唤起...");
+        dialogView.repairPermBtn.setText("正在申请...");
 
         threads.start(function () {
-            // --- 核心修复开始 ---
-            // 1. 强制拉起主界面到前台
-            // (Android 10+ 必须在前台才能申请录屏权限，否则会被系统拦截不弹窗)
-            app.launch(context.getPackageName());
-
-            // 2. 稍微等待一下，确保界面已经浮现
-            sleep(500);
-
-            // 3. 再请求权限 (此时应用在前台，弹窗会立即出现)
-            // 注意：requestScreenCapture 是阻塞的，直到用户点击允许/取消
-            let success = requestScreenCapture();
-            // --- 核心修复结束 ---
+            // --- 核心修改：移除强制拉起主界面 ---
+            // 直接请求权限。因为是由用户主动点击 UI 触发的，
+            // 绝大多数系统允许直接在当前应用层级弹出权限框。
+            let success = false;
+            try {
+                success = requestScreenCapture();
+            } catch (e) {
+                logErrorToScreen("申请权限时发生异常: " + e);
+            }
+            // --- 修改结束 ---
 
             ui.run(() => {
                 dialogView.repairPermBtn.setEnabled(true);
@@ -6237,7 +6237,7 @@ function showProfileManager() {
                 if (success) {
                     toast("✅ 截图权限已修复！");
                 } else {
-                    toast("⚠️ 权限申请被取消");
+                    toast("⚠️ 权限申请被取消或拦截");
                 }
 
                 // 重新检测并刷新显示
