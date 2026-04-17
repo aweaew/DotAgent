@@ -234,7 +234,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.4.0 加入定时器",
+    VERSION: "5.4.1 加入序列级前置条件",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -314,6 +314,7 @@ let appState = {
     isFloatyCreated: false,
     isExecuting: false,
     isMonitoring: false,
+    isMonitorBlocked: false, // 🟢 新增：用于记录当前监控是否被全局前置条件拦截
     threads: {},
     activeMonitors: {},
     timers: {},
@@ -2064,7 +2065,81 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     sequence.__priorityVersion = (sequence.__priorityVersion || 0) + 1;
                 }
             } catch (e) { }
+            // ==========================================
+            // 🟢 新增 1：序列级前置条件 (双向识别 + 防假死 + 🌟智能滤镜超时戳穿)
+            // ==========================================
+            let globalPreCheckPassed = true;
+            if (sequence.preCondition && sequence.preCondition.enabled && sequence.preCondition.value) {
+                if (sequence.preCondition.type === 'app') {
+                    let targetVal = sequence.preCondition.value.trim(); // 目标值
+                    let rawPkg = currentPackage() || ""; // 系统原始返回的包名
+                    
+                    const ghostPkgs = [
+                        "com.android.launcher", "com.miui.home", "com.bbk.launcher2", 
+                        "com.huawei.android.launcher", "com.oppo.launcher", "com.sec.android.app.launcher", 
+                        "org.autojs.autojs6", "com.android.systemui"
+                    ];
+                    
+                    let isGhostPkg = ghostPkgs.includes(rawPkg) || rawPkg.includes("launcher");
+                    
+                    // 🛡️ 核心修复 2.0：超时戳穿机制
+                    if (!isGhostPkg && rawPkg !== "") {
+                        appState.lastRealPkg = rawPkg; // 记录真实包名
+                        appState.ghostCounter = 0; // 遇到真实应用，重置干扰计数
+                    } else if (isGhostPkg) {
+                        // 连续在桌面的次数累加
+                        appState.ghostCounter = (appState.ghostCounter || 0) + 1; 
+                    }
+                    
+                    // 💡 戳穿判断：
+                    // 如果干扰项出现少于 4 次（约 3-4 秒），视为“系统底层手势条发癫”，借用缓存。
+                    // 如果大于等于 4 次，说明是真的退回桌面/AutoJs了，不再伪装，直面现实！
+                    let curPkg = rawPkg;
+                    if (isGhostPkg && appState.ghostCounter < 4) {
+                        curPkg = appState.lastRealPkg || rawPkg;
+                    }
+                    
+                    let curName = app.getAppName(curPkg) || ""; 
+                    let matchPkg = (curPkg === targetVal);
+                    let matchName = (curName.indexOf(targetVal) !== -1);
+                    
+                    if (!matchPkg && !matchName) {
+                        globalPreCheckPassed = false;
+                        
+                        let nowTime = new Date().getTime();
+                        // 5秒冷却机制
+                        if (!appState.lastLaunchTime || (nowTime - appState.lastLaunchTime > 5000)) {
+                            appState.lastLaunchTime = nowTime;
+                            appState.launchRetryCount = (appState.launchRetryCount || 0) + 1;
+                            
+                            if (appState.launchRetryCount >= 3) {
+                                console.error(`🚨 连续拉起失效！可能无障碍卡死，请去设置重启无障碍服务！`);
+                                ui.run(() => toastLog(`⚠️ 严重警告: 无法自动拉起 [${targetVal}]，请检查！`));
+                                appState.lastLaunchTime = nowTime + 10000; 
+                            } else {
+                                console.info(`🔄 守护生效：确认当前在 [${curName}]，准备拉起 [${targetVal}]...`);
+                                app.launchApp(targetVal) || app.launch(targetVal);
+                            }
+                        }
+                    }
+                }
+            }
 
+            // ⚠️ 拦截处理
+            if (!globalPreCheckPassed) {
+                appState.isMonitorBlocked = true;
+                if (capturedImage && !capturedImage.isRecycled()) {
+                    capturedImage.recycle();
+                    capturedImage = null;
+                }
+                sleep(interval);
+                continue;
+            } else {
+                appState.isMonitorBlocked = false; 
+                appState.lastLaunchTime = 0; 
+                appState.launchRetryCount = 0; 
+            }
+            // ==========================================
             const localTriggers = Array.isArray(sequence.triggers) ? sequence.triggers.slice() : [];
             let capturedImage = null;
             let triggerFiredInCycle = false;
@@ -2090,7 +2165,43 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 } else {
                     sequence._failCount = 0;
                 }
+                // ==========================================
+                // 🟢 新增 2：序列级前置条件 (需截图检查，如 OCR/找图)
+                // ==========================================
+                if (sequence.preCondition && sequence.preCondition.enabled && capturedImage) {
+                    if (sequence.preCondition.type === 'text') {
+                        let ocrResults = ocr.mlkit.detect(capturedImage);
+                        let found = ocrResults.some(res => (res.label || res.text || "").includes(sequence.preCondition.value));
+                        if (!found) globalPreCheckPassed = false;
+                    } 
+                    else if (sequence.preCondition.type === 'image') {
+                        let preImgPath = files.join(CONSTANTS.FILES.IMAGE_DIR, sequence.preCondition.value);
+                        if (files.exists(preImgPath)) {
+                            let preTemp = images.read(preImgPath);
+                            if (preTemp) {
+                                let p = images.findImage(capturedImage, preTemp, { threshold: 0.8 });
+                                if (!p) globalPreCheckPassed = false;
+                                preTemp.recycle();
+                            }
+                        } else {
+                            globalPreCheckPassed = false; // 找不到图片也算没通过
+                        }
+                    }
+                }
 
+                // ⚠️ 如果画面里没有指定特征，回收截图并跳过本轮循环
+                if (!globalPreCheckPassed) {
+                    appState.isMonitorBlocked = true; // 🔴 核心新增：告诉UI，我正在挂机等待！
+                    if (capturedImage && !capturedImage.isRecycled()) {
+                        capturedImage.recycle();
+                        capturedImage = null;
+                    }
+                    sleep(interval);
+                    continue;
+                }else {
+                appState.isMonitorBlocked = false; // 🟢 核心新增：条件满足，解除等待状态！
+                }
+                // ==========================================
                 const imgW = capturedImage.getWidth();
                 const imgH = capturedImage.getHeight();
 
@@ -2108,9 +2219,47 @@ function runSingleMonitorThread(sequence, sequenceKey) {
 
                         if (cooldownEndTime && realNowTime < cooldownEndTime) return;
                         if (cooldownEndTime && realNowTime >= cooldownEndTime) delete triggerCooldowns[triggerId];
+                        // ==========================================
+                        // 🟢 新增：前置条件 (Pre-condition) 检查逻辑
+                        // ==========================================
+                        if (trigger.preCondition && trigger.preCondition.enabled) {
+                            let preCheckPassed = false;
+                            try {
+                                if (trigger.preCondition.type === 'app') {
+                                    // 检查当前前台应用包名是否匹配
+                                    if (currentPackage() === trigger.preCondition.value) {
+                                        preCheckPassed = true;
+                                    }
+                                }
+                                else if (trigger.preCondition.type === 'text' && capturedImage) {
+                                    // 快速全屏 OCR 检查是否存在指定文字
+                                    let ocrResults = ocr.mlkit.detect(capturedImage);
+                                    preCheckPassed = ocrResults.some(res => (res.label || res.text || "").includes(trigger.preCondition.value));
+                                }
+                                else if (trigger.preCondition.type === 'image' && capturedImage) {
+                                    // 快速全屏找图检查
+                                    let preImgPath = files.join(CONSTANTS.FILES.IMAGE_DIR, trigger.preCondition.value);
+                                    if (files.exists(preImgPath)) {
+                                        let preTemp = images.read(preImgPath);
+                                        if (preTemp) {
+                                            let p = images.findImage(capturedImage, preTemp, { threshold: 0.8 });
+                                            if (p) preCheckPassed = true;
+                                            preTemp.recycle();
+                                        }
+                                    }
+                                }
+                            } catch (e) {
+                                logErrorToScreen("前置条件检查异常: " + e);
+                            }
 
+                            // ❌ 如果前置条件未满足，直接跳过当前触发器的后续计算
+                            if (!preCheckPassed) {
+                                return;
+                            }
+                        }
+                        // ==========================================
                         let foundLocation = null;
-
+                        
                         // --- 识别逻辑 ---
                         if (trigger.type === 'image') {
                             let template = threadImageCache[trigger.target]; // 先从缓存拿
@@ -2359,6 +2508,7 @@ function stopMonitoring(message) {
     if (!appState.isMonitoring && Object.keys(appState.activeMonitors).length === 0) return;
     clearAllMasks(); // <--- 新增：点击悬浮窗 🛑 停止所有监控时，清理所有遮罩
     appState.isMonitoring = false;
+    appState.isMonitorBlocked = false;
     appState.timers = {}; // Clear all timers on global monitor stop
 
     for (let threadId in appState.threads) {
@@ -2577,7 +2727,13 @@ function createControlPanel() {
                 let key = appSettings.mainMonitorKey;
                 if (!appState.isMonitoring) { key = Object.keys(appState.activeMonitors)[0] || key; }
                 let name = key ? ((sequences[key] || {}).name || key) : '监控中';
-                statusStr = `👁️ ${name}`;
+
+                // 👇 核心修改：根据拦截状态显示不同图标和文字
+                if (appState.isMonitorBlocked) {
+                    statusStr = `⏸️ 挂机等待 (${name})`; // 你也可以改成 `⏸️ 等待前置条件`
+                } else {
+                    statusStr = `👁️ ${name}`;
+                }
             }
             // 优先级 4: 空闲 (轮播显示)
             else {
@@ -3972,18 +4128,38 @@ function renderTaskListEditor(sequenceKey) {
 
 function showExecutionPolicyEditor(sequence, sequenceKey, onBackCallback) {
     const policy = sequence.executionPolicy || { mode: 'sequence' };
+    const preCondition = sequence.preCondition || { enabled: false, type: 'app', value: '' };
+
     const view = ui.inflate(
         <vertical padding="16">
             <text>运行模式:</text>
             <spinner id="mode" entries="序列 (可循环/被调用)|监控 (后台持续运行)" />
+            
             <vertical id="sequence_options">
                 <text>循环次数:</text>
                 <input id="loopCount" inputType="number" />
             </vertical>
+            
             <vertical id="monitor_options">
                 <text>扫描间隔 (ms):</text>
                 <input id="interval" inputType="number" />
             </vertical>
+
+            <View w="*" h="1dp" bg="#E0E0E0" margin="0 10"/>
+
+            <text text="全局前置条件 (仅在满足时运行)" textStyle="bold" textColor="{{CONSTANTS.UI.THEME.ACCENT_GRADIENT_START}}"/>
+            <horizontal gravity="center_vertical">
+                <checkbox id="preConditionEnabled" text="启用拦截" textColor="{{CONSTANTS.UI.THEME.PRIMARY_TEXT}}"/>
+                {/* 下拉框文字改为了“当前应用名称” */}
+                <spinner id="preConditionType" entries="当前应用名称|页面包含文字|页面包含图片" layout_weight="1" visibility="gone"/>
+            </horizontal>
+            <vertical id="preConditionValueContainer" visibility="gone">
+                <horizontal gravity="center_vertical">
+                    {/* 提示语改为输入应用名称，去掉了复杂的按钮 */}
+                    <input id="preConditionValue" hint="输入应用名称 (如: 闲鱼)" layout_weight="1" textSize="14sp" singleLine="true"/>
+                </horizontal>
+            </vertical>
+
         </vertical>, null, false
     );
 
@@ -3998,11 +4174,21 @@ function showExecutionPolicyEditor(sequence, sequenceKey, onBackCallback) {
         view.monitor_options.setVisibility(position === 1 ? 0 : 8);
     }
     updateVisibility(currentModeIndex);
+    view.mode.setOnItemSelectedListener({ onItemSelected: (p, v, position, id) => updateVisibility(position) });
 
-    view.mode.setOnItemSelectedListener({
-        onItemSelected: function (p, v, position, id) {
-            updateVisibility(position);
-        }
+    view.preConditionEnabled.setChecked(preCondition.enabled === true);
+    const preTypeMap = { 'app': 0, 'text': 1, 'image': 2 };
+    view.preConditionType.setSelection(preTypeMap[preCondition.type] || 0);
+    view.preConditionValue.setText(preCondition.value || "");
+
+    function updatePreConditionUI(isChecked) {
+        view.preConditionType.setVisibility(isChecked ? 0 : 8);
+        view.preConditionValueContainer.setVisibility(isChecked ? 0 : 8);
+    }
+    updatePreConditionUI(preCondition.enabled === true);
+
+    view.preConditionEnabled.setOnCheckedChangeListener((c, isChecked) => {
+        updatePreConditionUI(isChecked);
     });
 
     dialogs.build({
@@ -4017,6 +4203,13 @@ function showExecutionPolicyEditor(sequence, sequenceKey, onBackCallback) {
         policy.loopCount = parseInt(view.loopCount.getText().toString()) || 1;
         policy.interval = parseInt(view.interval.getText().toString()) || 1000;
         delete policy.dynamic;
+
+        const preTypeKeys = ['app', 'text', 'image'];
+        sequence.preCondition = {
+            enabled: view.preConditionEnabled.isChecked(),
+            type: preTypeKeys[view.preConditionType.getSelectedItemPosition()],
+            value: view.preConditionValue.getText().toString().trim() // 自动去除首尾空格防止误判
+        };
 
         sequence.executionPolicy = policy;
 
