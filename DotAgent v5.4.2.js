@@ -234,7 +234,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.4.1 加入序列级前置条件",
+    VERSION: "5.4.2 引入状态机",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -1844,13 +1844,18 @@ function stopExecution(message) {
     if (!appState.isExecuting) return;
     appState.isExecuting = false;
 
+    // 🌟 强杀主序列执行线程
     if (appState.threads.execution && appState.threads.execution.isAlive()) {
         appState.threads.execution.interrupt();
     }
     appState.threads.execution = null;
+    
+    clearAllMasks(); // 🌟 新增：防止主任务执行一半被掐断时屏幕留着遮罩
 
     toast(message);
     logToScreen(message);
+    
+    // 🟢 完美保留：原版的按钮文字恢复逻辑
     updateControlButtonText("▶️", "start");
 }
 
@@ -2044,6 +2049,12 @@ function runSingleMonitorThread(sequence, sequenceKey) {
         let triggerCooldowns = {};
         let threadImageCache = {}; // <--- 新增：监控线程专用的图片内存缓存
 
+        // ==========================================
+        // 🧠 FSM: 初始化状态机全局变量
+        // ==========================================
+        let fsmState = "DEFAULT"; 
+        let stateStartTime = new Date().getTime();
+
         // --- 2. 主循环 ---
         while (!threads.currentThread().isInterrupted()) {
 
@@ -2066,7 +2077,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 }
             } catch (e) { }
             // ==========================================
-            // 🟢 新增 1：序列级前置条件 (双向识别 + 防假死 + 🌟智能滤镜超时戳穿)
+            // 🟢 新增 1：序列级前置条件 (双向识别 + 防假死 + 🌟防桌面干扰滤镜)
             // ==========================================
             let globalPreCheckPassed = true;
             if (sequence.preCondition && sequence.preCondition.enabled && sequence.preCondition.value) {
@@ -2074,6 +2085,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     let targetVal = sequence.preCondition.value.trim(); // 目标值
                     let rawPkg = currentPackage() || ""; // 系统原始返回的包名
                     
+                    // 🛡️ 核心修复：智能滤镜，过滤掉系统桌面、手势条、悬浮窗等干扰项
                     const ghostPkgs = [
                         "com.android.launcher", "com.miui.home", "com.bbk.launcher2", 
                         "com.huawei.android.launcher", "com.oppo.launcher", "com.sec.android.app.launcher", 
@@ -2082,24 +2094,18 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     
                     let isGhostPkg = ghostPkgs.includes(rawPkg) || rawPkg.includes("launcher");
                     
-                    // 🛡️ 核心修复 2.0：超时戳穿机制
+                    // 如果不是干扰项，就把它记作“最后一次看到的真实App”
                     if (!isGhostPkg && rawPkg !== "") {
-                        appState.lastRealPkg = rawPkg; // 记录真实包名
-                        appState.ghostCounter = 0; // 遇到真实应用，重置干扰计数
+                        appState.lastRealPkg = rawPkg; 
+                        appState.ghostCounter = 0;
                     } else if (isGhostPkg) {
-                        // 连续在桌面的次数累加
-                        appState.ghostCounter = (appState.ghostCounter || 0) + 1; 
+                        appState.ghostCounter = (appState.ghostCounter || 0) + 1;
                     }
                     
-                    // 💡 戳穿判断：
-                    // 如果干扰项出现少于 4 次（约 3-4 秒），视为“系统底层手势条发癫”，借用缓存。
-                    // 如果大于等于 4 次，说明是真的退回桌面/AutoJs了，不再伪装，直面现实！
-                    let curPkg = rawPkg;
-                    if (isGhostPkg && appState.ghostCounter < 4) {
-                        curPkg = appState.lastRealPkg || rawPkg;
-                    }
-                    
+                    // 决定最终用来判断的包名：如果是干扰项，就借用缓存的真实包名
+                    let curPkg = (isGhostPkg && appState.ghostCounter < 4) ? (appState.lastRealPkg || rawPkg) : rawPkg;
                     let curName = app.getAppName(curPkg) || ""; 
+                    
                     let matchPkg = (curPkg === targetVal);
                     let matchName = (curName.indexOf(targetVal) !== -1);
                     
@@ -2113,21 +2119,26 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                             appState.launchRetryCount = (appState.launchRetryCount || 0) + 1;
                             
                             if (appState.launchRetryCount >= 3) {
-                                console.error(`🚨 连续拉起失效！可能无障碍卡死，请去设置重启无障碍服务！`);
-                                ui.run(() => toastLog(`⚠️ 严重警告: 无法自动拉起 [${targetVal}]，请检查！`));
+                                console.error(`🚨 无障碍服务可能卡死，或目标应用无法拉起！`);
+                                ui.run(() => toastLog(`⚠️ 严重警告: 连续拉起失败，请检查无障碍服务或应用名称！`));
                                 appState.lastLaunchTime = nowTime + 10000; 
                             } else {
-                                console.info(`🔄 守护生效：确认当前在 [${curName}]，准备拉起 [${targetVal}]...`);
+                                console.info(`🔄 守护生效：当前真实界面是 [${curName}]，准备拉起 [${targetVal}]...`);
                                 app.launchApp(targetVal) || app.launch(targetVal);
                             }
+                        }
+                        
+                        if (Math.random() < 0.3) { 
+                            console.verbose(`⏸️ 等待应用拉起... 过滤后判断当前处于: [${curName}]`);
                         }
                     }
                 }
             }
 
-            // ⚠️ 拦截处理
+            // ⚠️ 如果条件未满足，触发拦截，挂机休眠
             if (!globalPreCheckPassed) {
                 appState.isMonitorBlocked = true;
+
                 if (capturedImage && !capturedImage.isRecycled()) {
                     capturedImage.recycle();
                     capturedImage = null;
@@ -2139,7 +2150,23 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 appState.lastLaunchTime = 0; 
                 appState.launchRetryCount = 0; 
             }
+
             // ==========================================
+            // 🧠 FSM: 超时兜底机制 (防卡死)
+            // 放置在满足前置条件后，确保应用在前台时才计算有效超时
+            // ==========================================
+            let timeInState = new Date().getTime() - stateStartTime;
+            let globalTimeout = sequence.executionPolicy.fsmTimeout || 35000; 
+            if (fsmState !== "DEFAULT" && timeInState > globalTimeout) {
+                logErrorToScreen(`🚨 FSM卡死兜底: 在状态 [${fsmState}] 停留超过 ${globalTimeout}ms，强制返回！`);
+                back(); // 强制按物理返回键
+                sleep(2000);
+                fsmState = "DEFAULT"; // 重置回大厅
+                stateStartTime = new Date().getTime();
+                continue; // 结束本轮，重新截图
+            }
+            // ==========================================
+
             const localTriggers = Array.isArray(sequence.triggers) ? sequence.triggers.slice() : [];
             let capturedImage = null;
             let triggerFiredInCycle = false;
@@ -2198,8 +2225,8 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     }
                     sleep(interval);
                     continue;
-                }else {
-                appState.isMonitorBlocked = false; // 🟢 核心新增：条件满足，解除等待状态！
+                } else {
+                    appState.isMonitorBlocked = false; // 🟢 核心新增：条件满足，解除等待状态！
                 }
                 // ==========================================
                 const imgW = capturedImage.getWidth();
@@ -2212,6 +2239,14 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                     ordered_final.forEach(function (trigger) {
                         if (trigger.enabled === false) return;
                         if (triggerFiredInCycle || threads.currentThread().isInterrupted()) return;
+
+                        // ==========================================
+                        // 🧠 FSM: 状态拦截
+                        // 如果触发器要求了特定状态，而当前状态不符，直接跳过
+                        // ==========================================
+                        if (trigger.requiredState && trigger.requiredState.trim() !== "" && trigger.requiredState !== fsmState) {
+                            return; 
+                        }
 
                         const triggerId = getTriggerId(trigger);
                         const cooldownEndTime = triggerCooldowns[triggerId];
@@ -2356,7 +2391,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                     let subImg = null;
                                     try {
                                         subImg = images.clip(capturedImage, searchRegion[0], searchRegion[1], searchRegion[2], searchRegion[3]);
-                                        let ocrResults = ocr.mlkit.detect(subImg); // 如果是 fullScreen 就是 ocr.mlkit.detect(capturedImage);
+                                        let ocrResults = ocr.mlkit.detect(subImg); 
                                         ocrTarget = ocrResults.find(res => (res.label || res.text || "").includes(trigger.target));
                                         if (ocrTarget) {
                                             ocrTarget.bounds.left += searchRegion[0];
@@ -2368,7 +2403,7 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                                 } else {
                                     // 全屏识别 (直接跑)
             
-                                    let ocrResults = ocr.mlkit.detect(capturedImage); // 如果是 fullScreen 就是 ocr.mlkit.detect(capturedImage);
+                                    let ocrResults = ocr.mlkit.detect(capturedImage); 
                                     ocrTarget = ocrResults.find(res => (res.label || res.text || "").includes(trigger.target));
                                 }
 
@@ -2424,6 +2459,18 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                             if (trigger.cooldownMs > 0) {
                                 triggerCooldowns[triggerId] = new Date().getTime() + trigger.cooldownMs;
                             }
+                            
+                            // ==========================================
+                            // 🧠 FSM: 状态跳转
+                            // 如果触发器触发成功，且设置了跳转状态，则更新全局状态
+                            // ==========================================
+                            if (trigger.nextState && trigger.nextState.trim() !== "") {
+                                if (fsmState !== trigger.nextState) {
+                                    logToScreen(`🔄 FSM状态流转: [${fsmState}] ➔ [${trigger.nextState}]`);
+                                    fsmState = trigger.nextState;
+                                    stateStartTime = new Date().getTime(); // 重置超时倒计时
+                                }
+                            }
                         } else {
                             if (trigger.onFail && trigger.onFail.action && trigger.onFail.action !== 'skip') {
                                 executeMonitorFailAction(trigger);
@@ -2449,8 +2496,13 @@ function runSingleMonitorThread(sequence, sequenceKey) {
                 }
 
             } catch (e) {
-                if (e instanceof java.lang.InterruptedException) break;
-                logErrorToScreen(`监控线程 [${sequence.name}] 错误: ${e}`);
+                // 🌟 核心修复：兼容 Rhino 引擎的多种中断异常包装形式
+                let errStr = e.toString();
+                if (e instanceof java.lang.InterruptedException || errStr.indexOf("InterruptedException") !== -1 || threads.currentThread().isInterrupted()) {
+                    console.info(`[${sequence.name}] 接收到中断信号，监控循环安全退出。`);
+                    break; 
+                }
+                logErrorToScreen(`监控线程 [${sequence.name}] 错误: ${errStr}`);
             }
             sleep(interval);
         }
@@ -2506,16 +2558,18 @@ function toggleMonitoring() {
 
 function stopMonitoring(message) {
     if (!appState.isMonitoring && Object.keys(appState.activeMonitors).length === 0) return;
-    clearAllMasks(); // <--- 新增：点击悬浮窗 🛑 停止所有监控时，清理所有遮罩
+    
+    clearAllMasks(); // 清理所有可能残留的遮罩
     appState.isMonitoring = false;
-    appState.isMonitorBlocked = false;
+    appState.isMonitorBlocked = false; // 解除挂机等待状态
     appState.timers = {}; // Clear all timers on global monitor stop
 
+    // 🌟 强杀所有以 monitor_ 开头的监控线程
     for (let threadId in appState.threads) {
         if (threadId.startsWith("monitor_")) {
             const thread = appState.threads[threadId];
             if (thread && thread.isAlive()) {
-                thread.interrupt();
+                thread.interrupt(); // 发送中断信号（现在的 catch 能接住了！）
             }
         }
     }
@@ -2525,7 +2579,9 @@ function stopMonitoring(message) {
 
     toast(message);
     logToScreen(message);
-    updateMonitorStatusUI();
+    
+    // 🟢 完美保留：原版的 UI 刷新逻辑
+    updateMonitorStatusUI(); 
 }
 
 
@@ -4143,6 +4199,9 @@ function showExecutionPolicyEditor(sequence, sequenceKey, onBackCallback) {
             <vertical id="monitor_options">
                 <text>扫描间隔 (ms):</text>
                 <input id="interval" inputType="number" />
+                
+                <text text="FSM 状态兜底超时 (ms):" marginTop="5"/>
+                <input id="fsmTimeout" hint="默认 35000 (35秒)" inputType="number" />
             </vertical>
 
             <View w="*" h="1dp" bg="#E0E0E0" margin="0 10"/>
@@ -4168,6 +4227,9 @@ function showExecutionPolicyEditor(sequence, sequenceKey, onBackCallback) {
     view.mode.setSelection(currentModeIndex > -1 ? currentModeIndex : 0);
     view.loopCount.setText(String(policy.loopCount || 1));
     view.interval.setText(String(policy.interval || 1000));
+    
+    // 🌟 加载 FSM 超时
+    view.fsmTimeout.setText(String(policy.fsmTimeout || 35000));
 
     function updateVisibility(position) {
         view.sequence_options.setVisibility(position === 0 ? 0 : 8);
@@ -4202,6 +4264,9 @@ function showExecutionPolicyEditor(sequence, sequenceKey, onBackCallback) {
         policy.mode = selectedMode;
         policy.loopCount = parseInt(view.loopCount.getText().toString()) || 1;
         policy.interval = parseInt(view.interval.getText().toString()) || 1000;
+        
+        // 🌟 保存 FSM 超时
+        policy.fsmTimeout = parseInt(view.fsmTimeout.getText().toString()) || 35000;
         delete policy.dynamic;
 
         const preTypeKeys = ['app', 'text', 'image'];
@@ -4533,7 +4598,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
 
     // 1. 准备数据副本
     const currentTrigger = isNew ?
-        { type: 'image', target: 'new_image.png', threshold: 0.8, action: { type: 'click', delayMs: 0 }, cooldownMs: 0, cachePadding: (appSettings.defaultCachePadding || 50), onFail: { action: 'skip' }, enabled: true, isTopPriority: false } :
+        { type: 'image', target: 'new_image.png', threshold: 0.8, action: { type: 'click', delayMs: 0 }, cooldownMs: 0, cachePadding: (appSettings.defaultCachePadding || 50), onFail: { action: 'skip' }, enabled: true, isTopPriority: false, requiredState: "", nextState: "" } :
         JSON.parse(JSON.stringify(trigger));
 
     // 确保对象结构完整
@@ -4546,7 +4611,7 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     const callableSequences = Object.entries(sequences)
         .filter(([key, seq]) => key !== sequenceKey)
         .map(([key, seq]) => ({ id: key, name: seq.name || key }));
-    const sequenceEntries = callableSequences.length > 0 ? callableSequences.map(s => s.name).join('|').replace(/\|/g, '|') : "无可用序列"; // 简单修复 join
+    const sequenceEntries = callableSequences.length > 0 ? callableSequences.map(s => s.name).join('|').replace(/\|/g, '|') : "无可用序列";
 
     // --- XML 界面 ---
     const viewXML = `
@@ -4557,6 +4622,18 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
                 <View w="10dp" />
                 <checkbox id="isTopPriority" text="🔥 置顶优先 (忽略PQ排序)" textColor="#FF5722" textStyle="bold"/>
             </horizontal>
+
+            <text text="🧠 FSM 状态流转" marginTop="10" textStyle="bold" textColor="#9C27B0" textSize="12sp"/>
+            <horizontal gravity="center_vertical">
+                <text textSize="12sp" textColor="#666666">前置:</text>
+                <input id="requiredState" hint="无前置(留空)" layout_weight="1" textSize="12sp" singleLine="true"/>
+                <button id="btn_sel_req" text="▼" w="35dp" h="40dp" style="Widget.AppCompat.Button.Borderless.Colored"/>
+                
+                <text textSize="12sp" textColor="#666666" marginLeft="5">跳转:</text>
+                <input id="nextState" hint="不跳转(留空)" layout_weight="1" textSize="12sp" singleLine="true"/>
+                <button id="btn_sel_next" text="▼" w="35dp" h="40dp" style="Widget.AppCompat.Button.Borderless.Colored"/>
+            </horizontal>
+            <View w="*" h="1dp" bg="#EEEEEE" margin="5 0"/>
 
             <text>触发类型:</text>
             <spinner id="type" entries="图像|文本(OCR)|计时器结束|到达指定时间" />
@@ -4633,10 +4710,36 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
     const view = ui.inflate(viewXML, null, false);
 
     // --- UI 初始化 ---
-    // 1. 设置置顶 Checkbox
     view.isTopPriority.setChecked(currentTrigger.isTopPriority === true);
 
-    if (isNew) view.order_row.setVisibility(0); // 显示序号行
+    // 🌟 加载 FSM UI 数据
+    view.requiredState.setText(currentTrigger.requiredState || "");
+    view.nextState.setText(currentTrigger.nextState || "");
+
+    // 🌟 自动扫描并收集当前序列已有的所有状态
+    let stateSet = new Set(["[清空状态]", "DEFAULT", "HALL", "TASK_CHECK", "EXECUTING", "RESULT"]);
+    triggers.forEach(t => {
+        if (t.requiredState && t.requiredState.trim() !== "") stateSet.add(t.requiredState.trim());
+        if (t.nextState && t.nextState.trim() !== "") stateSet.add(t.nextState.trim());
+    });
+    let stateArray = Array.from(stateSet);
+
+    // 🌟 下拉列表按钮点击事件
+    view.btn_sel_req.click(() => {
+        dialogs.build({ title: "选择前置状态", items: stateArray }).on("item_select", (index, item, dialog) => {
+            view.requiredState.setText(index === 0 ? "" : item); // 选第一项则清空
+            dialog.dismiss();
+        }).show();
+    });
+
+    view.btn_sel_next.click(() => {
+        dialogs.build({ title: "选择跳转状态", items: stateArray }).on("item_select", (index, item, dialog) => {
+            view.nextState.setText(index === 0 ? "" : item); // 选第一项则清空
+            dialog.dismiss();
+        }).show();
+    });
+
+    if (isNew) view.order_row.setVisibility(0);
 
     const typeMap = { 'image': 0, 'ocr': 1, 'timer_end': 2, 'time': 3 };
     view.type.setSelection(typeMap[currentTrigger.type] || 0);
@@ -4833,7 +4936,10 @@ function showTriggerEditor(trigger, sequence, sequenceKey, onBackCallback) {
 
         // --- 保存置顶优先 ---
         newTriggerData.isTopPriority = view.isTopPriority.isChecked();
-        // --- 保存结束 ---
+        
+        // --- 保存 FSM 数据 ---
+        newTriggerData.requiredState = view.requiredState.getText().toString().trim();
+        newTriggerData.nextState = view.nextState.getText().toString().trim();
 
         const pTxt = view.cache_padding_input.getText().toString();
         newTriggerData.cachePadding = !isNaN(parseInt(pTxt)) ? parseInt(pTxt) : (appSettings.defaultCachePadding || 50);
