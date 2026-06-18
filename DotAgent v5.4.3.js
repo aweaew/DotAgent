@@ -234,7 +234,7 @@ function reorderByPriority(sequence, triggers) {
 const __WORK_DIR = files.join(files.getSdcardPath(), "Download", "DotAgent_WorkSpace");
 
 const CONSTANTS = {
-    VERSION: "5.4.2 引入状态机",
+    VERSION: "5.4.3 齿轮改成计数器",
     UI: {
         LONG_PRESS_DURATION_MS: 800,
         CLICK_DURATION_MS: 300,
@@ -302,7 +302,8 @@ const DEFAULT_SETTINGS = {
     defaultCachePadding: 50,   // <-- 在它下面添加这一行
     // 【新增】默认关闭灰度化
     useGrayscale: false,
-    defaultSafeArea: [0, 80, 1080, 2200]
+    defaultSafeArea: [0, 80, 1080, 2200],
+    clickCounter: 0 // <--- 在最后加上这一行（别忘了上一行末尾如果有需要，加个逗号）
 };
 
 
@@ -2714,33 +2715,38 @@ function createControlPanel() {
         if (uiRefs.controlPanel.addTaskBtn) uiRefs.controlPanel.addTaskBtn.click(showProfileManager);
 
         if (uiRefs.controlPanel.manageBtn) {
-            let manageClickCount = 0;
-            let manageClickTimer = null;
-            const doubleClickDelay = 300;
+            // 初始化显示当前计数
+            uiRefs.controlPanel.manageBtn.setText(String(appSettings.clickCounter || 0));
 
+            // 增加一个时间戳标记，用来防误触
+            let lastResetTime = 0; 
+
+            // 单击：立即加 1
             uiRefs.controlPanel.manageBtn.click(() => {
-                manageClickCount++;
-                if (manageClickTimer) { clearTimeout(manageClickTimer); }
-                manageClickTimer = setTimeout(() => {
-                    if (manageClickCount === 1) {
-                        logToScreen("正在打开主编辑器...");
-                        app.launch(context.getPackageName());
-                        setTimeout(() => {
-                            ui.run(() => {
-                                switchView(ui.sequenceEditorView);
-                                if (ui.sequenceEditorView.getChildCount() === 0) {
-                                    logToScreen("初始化序列编辑器...");
-                                    renderSequenceListEditor();
-                                }
-                            });
-                        }, 500);
-                    } else if (manageClickCount >= 2) {
-                        activity.moveTaskToBack(true);
-                        toast("主窗口已隐藏");
-                    }
-                    manageClickCount = 0;
-                    manageClickTimer = null;
-                }, doubleClickDelay);
+                // 如果距离上一次长按归零不到 500 毫秒，说明这是长按松手触发的，直接拦截掉
+                if (Date.now() - lastResetTime < 500) {
+                    return;
+                }
+
+                appSettings.clickCounter = (appSettings.clickCounter || 0) + 1;
+                ui.run(() => {
+                    uiRefs.controlPanel.manageBtn.setText(String(appSettings.clickCounter));
+                });
+                saveCurrentProfileThrottled();
+            });
+
+            // 长按：归零
+            uiRefs.controlPanel.manageBtn.longClick(() => {
+                lastResetTime = Date.now(); // 记录触发归零的精确时间
+
+                appSettings.clickCounter = 0;
+                ui.run(() => {
+                    uiRefs.controlPanel.manageBtn.setText("0");
+                });
+                saveCurrentProfileThrottled();
+                toast("计数已归零");
+                
+                return true; 
             });
         }
     });
